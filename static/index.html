@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexusAI</title>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<form id="login" hidden>
+  <h1>NexusAI</h1>
+  <label>Имя <input name="name" autocomplete="username" required></label>
+  <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
+  <button>Войти</button>
+  <p class="error" id="login-error"></p>
+</form>
+
+<div id="main" hidden>
+  <aside id="side">
+    <div class="side-head">
+      <strong>NexusAI</strong>
+      <span id="me" class="muted"></span>
+    </div>
+    <div class="side-title">
+      <strong>Чаты</strong>
+      <div class="add">
+        <button id="add" class="icon" aria-label="Новая беседа" aria-haspopup="menu">+</button>
+        <div id="add-menu" class="menu" role="menu" hidden></div>
+      </div>
+    </div>
+    <nav id="chats"></nav>
+    <div id="quota" class="muted"></div>
+    <div class="side-foot">
+      <button id="users-open" hidden>Пользователи</button>
+      <button id="passwd">Пароль</button>
+      <button id="logout">Выйти</button>
+    </div>
+  </aside>
+
+  <section id="chat">
+    <header>
+      <button id="menu" class="icon" aria-label="Беседы">☰</button>
+      <h2 id="title" title="Переименовать">Выберите или создайте беседу</h2>
+      <select id="model" aria-label="Модель" hidden></select>
+      <select id="effort" aria-label="Уровень размышления" hidden></select>
+      <button id="files-open" class="icon" aria-label="Файлы беседы" hidden>📁</button>
+      <button id="delete" class="icon" aria-label="Удалить беседу" hidden>🗑</button>
+    </header>
+    <div id="feed"></div>
+    <form id="composer" hidden>
+      <div id="banner" class="banner" hidden></div>
+      <div id="attached"></div>
+      <div class="row">
+        <label class="icon attach" aria-label="Прикрепить файлы">📎<input id="file" type="file" multiple hidden></label>
+        <textarea id="text" rows="1" placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+        <button id="send">Отправить</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<dialog id="users" class="wide">
+  <div class="users-layout">
+    <div class="users-side">
+      <h3>Пользователи</h3>
+      <ul id="users-list"></ul>
+      <button id="user-new">+ Добавить</button>
+    </div>
+    <div id="card"><p class="muted">Выберите пользователя слева.</p></div>
+  </div>
+  <form method="dialog" class="close"><button>Закрыть</button></form>
+</dialog>
+
+<dialog id="files">
+  <h3>Файлы беседы</h3>
+  <ul id="files-list"></ul>
+  <form method="dialog"><button>Закрыть</button></form>
+</dialog>
+
+</body>
+</html>

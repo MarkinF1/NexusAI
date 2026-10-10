@@ -1,0 +1,15 @@
+[Unit]
+Description=NexusAI web interface to Claude and Codex (subscription auth)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/NexusAI
+EnvironmentFile=%h/projects/NexusAI/.env
+ExecStart=%h/projects/NexusAI/.venv/bin/python %h/projects/NexusAI/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
