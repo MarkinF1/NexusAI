@@ -36,7 +36,8 @@ import core  # noqa: E402
 import usage  # noqa: E402
 import users  # noqa: E402
 
-ALL = users.clean({})["access"]
+ACCESS = users.clean({})["access"]
+ALL = ACCESS["claude"]
 from fastapi import HTTPException  # noqa: E402
 
 
@@ -180,8 +181,8 @@ class Permissions(unittest.TestCase):
     def test_codex(self):
         meta = {**self.meta, "engine": "codex", "sid": ""}
         with unittest.mock.patch.object(core, "CODEX_BIN", "codex"):
-            on = " ".join(core.codex_args(3, meta, self.cwd, [], ALL))
-            off = " ".join(core.codex_args(3, meta, self.cwd, [], {**ALL, "network": False,
+            on = " ".join(core.codex_args(3, meta, self.cwd, [], ACCESS["codex"]))
+            off = " ".join(core.codex_args(3, meta, self.cwd, [], {**ACCESS["codex"], "network": False,
                                                                    "web": False, "write": False}))
         self.assertIn("network.enabled=true", on)
         self.assertIn('web_search="live"', on)
@@ -207,6 +208,14 @@ class Settings(unittest.TestCase):
         self.assertIsNotNone(app.allowed_model(avail, "codex", "x", ""))
         with self.assertRaises(ValueError):
             users.clean({"engines": {"claude": {"limit_5h": 150}}})
+
+    def test_access(self):
+        # У каждой сети свои галочки; старый общий формат применяется ко всем.
+        data = users.clean({"access": {"claude": {"web": False}}})["access"]
+        self.assertEqual((data["claude"]["web"], data["codex"]["web"]), (False, True))
+        self.assertNotIn("bash", data["codex"])
+        old = users.clean({"access": {"network": False}})["access"]
+        self.assertEqual((old["claude"]["network"], old["codex"]["network"]), (False, False))
 
 
 class Accounting(unittest.TestCase):

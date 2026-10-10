@@ -15,8 +15,10 @@ import time
 import core
 
 LOGIN_TTL = 30 * 24 * 3600
-# Галочки «Доступ»: что модели можно делать в песочнице.
-ACCESS = ("bash", "write", "network", "web", "all_chats")
+# Галочки «Доступ» у каждой сети свои: что модели можно делать в песочнице.
+# Shell у codex не отключается, поэтому галочки «Запуск команд» у него нет.
+ACCESS = {"claude": ("bash", "write", "network", "web", "all_chats"),
+          "codex": ("write", "network", "web", "all_chats")}
 
 
 def db():
@@ -161,8 +163,15 @@ def clean(raw):
                        for slug, m in (conf.get("models") or {}).items()},
         }
     return {"quota_mb": quota,
-            "access": {k: bool(access.get(k, True)) for k in ACCESS},
+            "access": {engine: engine_access(access, engine) for engine in ACCESS},
             "engines": engines}
+
+
+def engine_access(access, engine):
+    conf = access.get(engine)
+    if not isinstance(conf, dict):
+        conf = access  # старый формат: одни галочки на все сети
+    return {k: bool(conf.get(k, True)) for k in ACCESS[engine]}
 
 
 def engine_conf(data, engine):

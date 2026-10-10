@@ -59,6 +59,10 @@ async def security_headers(request: Request, call_next):
         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'")
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    # Статику браузер сверяет с сервером при каждой загрузке (по ETag — без
+    # повторного скачивания). Иначе он часами держит старый style.css рядом
+    # с новыми index.html и app.js, и вёрстка разваливается.
+    response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
@@ -228,7 +232,7 @@ async def work(uid, meta, prompt, images, job, data):
     engine, started = meta["engine"], time.time()
     points, tokens, limited = [], [0, 0], None
     try:
-        async for event in core.run(uid, meta, prompt, data["access"], images, on_proc=job.attach):
+        async for event in core.run(uid, meta, prompt, data["access"][engine], images, on_proc=job.attach):
             if event["kind"] == "limits":
                 points.append(event)
                 limited = limited or usage.check(uid, engine, data, points, started)

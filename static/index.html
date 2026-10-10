@@ -2,8 +2,20 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>NexusAI</title>
+<!-- «На экран Домой»: открывается без панелей Safari, как приложение -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/app-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NexusAI">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f5f7f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d2220" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no">
+<link rel="preload" href="vendor/fonts/golos-text-cyrillic-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/purify.min.js"></script>
@@ -11,68 +23,95 @@
 </head>
 <body>
 
+<!-- Иконки интерфейса: один набор линий, цвет берётся из текста -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5M10.5 11v5M13.5 11v5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 5.5L8 12l6.5 6.5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M19 11.5l-6.8 6.8a4.2 4.2 0 0 1-6-6l7.3-7.3a2.8 2.8 0 0 1 4 4l-7.2 7.2a1.4 1.4 0 0 1-2-2l6.6-6.6"/></symbol>
+</svg>
+
 <form id="login" hidden>
-  <h1>NexusAI</h1>
+  <h1 class="wordmark">NexusAI</h1>
+  <p class="lead">Claude и Codex на вашем сервере</p>
   <label>Имя <input name="name" autocomplete="username" required></label>
   <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
-  <button>Войти</button>
-  <p class="error" id="login-error"></p>
+  <button class="primary">Войти</button>
+  <p class="error" id="login-error" role="alert"></p>
 </form>
 
 <div id="main" hidden>
   <aside id="side">
     <div class="side-head">
-      <strong>NexusAI</strong>
-      <span id="me" class="muted"></span>
+      <span class="wordmark">NexusAI</span>
     </div>
     <div class="side-title">
-      <strong>Чаты</strong>
+      <h2>Беседы</h2>
       <div class="add">
-        <button id="add" class="icon" aria-label="Новая беседа" aria-haspopup="menu">+</button>
+        <button id="add" class="icon" aria-label="Новая беседа" aria-haspopup="menu" title="Новая беседа"><svg width="20" height="20"><use href="#i-plus"/></svg></button>
         <div id="add-menu" class="menu" role="menu" hidden></div>
       </div>
     </div>
-    <nav id="chats"></nav>
-    <div id="quota" class="muted"></div>
+    <nav id="chats" aria-label="Беседы"></nav>
+    <div id="quota"></div>
     <div class="side-foot">
-      <button id="users-open" hidden>Пользователи</button>
-      <button id="passwd">Пароль</button>
-      <button id="logout">Выйти</button>
+      <span id="me"></span>
+      <button id="settings-open" class="link">Настройки</button>
     </div>
   </aside>
+  <div id="scrim" hidden></div>
 
   <section id="chat">
     <header>
-      <button id="menu" class="icon" aria-label="Беседы">☰</button>
-      <h2 id="title" title="Переименовать">Выберите или создайте беседу</h2>
+      <button id="menu" class="icon" aria-label="Беседы"><svg width="20" height="20"><use href="#i-menu"/></svg></button>
+      <h2 id="title" title="Переименовать"></h2>
       <select id="model" aria-label="Модель" hidden></select>
       <select id="effort" aria-label="Уровень размышления" hidden></select>
-      <button id="files-open" class="icon" aria-label="Файлы беседы" hidden>📁</button>
-      <button id="delete" class="icon" aria-label="Удалить беседу" hidden>🗑</button>
+      <button id="files-open" class="icon" aria-label="Файлы беседы" title="Файлы беседы" hidden><svg width="20" height="20"><use href="#i-folder"/></svg></button>
+      <button id="delete" class="icon" aria-label="Удалить беседу" title="Удалить беседу" hidden><svg width="20" height="20"><use href="#i-trash"/></svg></button>
     </header>
     <div id="feed"></div>
     <form id="composer" hidden>
-      <div id="banner" class="banner" hidden></div>
-      <div id="attached"></div>
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div id="attached" class="chips"></div>
       <div class="row">
-        <label class="icon attach" aria-label="Прикрепить файлы">📎<input id="file" type="file" multiple hidden></label>
-        <textarea id="text" rows="1" placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
-        <button id="send">Отправить</button>
+        <label class="icon attach" aria-label="Прикрепить файлы" title="Прикрепить файлы"><svg width="20" height="20"><use href="#i-clip"/></svg><input id="file" type="file" multiple hidden></label>
+        <textarea id="text" rows="1" placeholder="Сообщение" title="Enter — отправить, Shift+Enter — новая строка"></textarea>
+        <button id="send" class="primary">Отправить</button>
       </div>
     </form>
   </section>
 </div>
 
-<dialog id="users" class="wide">
+<!-- Настройки. На телефоне — на весь экран и по шагам (data-level):
+     список → разделы участника → раздел, с кнопкой «Назад». -->
+<dialog id="settings" class="wide" data-level="list">
+  <div class="dialog-bar">
+    <button id="settings-back" class="icon" aria-label="Назад"><svg width="20" height="20"><use href="#i-back"/></svg></button>
+    <h3 id="settings-title">Настройки</h3>
+    <form method="dialog"><button class="icon" aria-label="Закрыть"><svg width="20" height="20"><use href="#i-close"/></svg></button></form>
+  </div>
   <div class="users-layout">
     <div class="users-side">
-      <h3>Пользователи</h3>
-      <ul id="users-list"></ul>
-      <button id="user-new">+ Добавить</button>
+      <section class="account">
+        <div id="account-name"></div>
+        <div id="account-role" class="muted"></div>
+        <div class="actions">
+          <button id="passwd">Сменить пароль</button>
+          <button id="logout">Выйти</button>
+        </div>
+      </section>
+      <section class="people">
+        <h4>Участники</h4>
+        <ul id="users-list"></ul>
+        <button id="user-new">Добавить</button>
+      </section>
     </div>
-    <div id="card"><p class="muted">Выберите пользователя слева.</p></div>
+    <div id="card"><p class="muted">Выберите участника слева.</p></div>
   </div>
-  <form method="dialog" class="close"><button>Закрыть</button></form>
 </dialog>
 
 <dialog id="files">
