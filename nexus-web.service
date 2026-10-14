@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/NexusAI
-EnvironmentFile=%h/projects/NexusAI/.env
-ExecStart=%h/projects/NexusAI/.venv/bin/python %h/projects/NexusAI/app.py
+WorkingDirectory=/opt/NexusAI
+EnvironmentFile=/opt/NexusAI/.env
+ExecStart=/opt/NexusAI/.venv/bin/python /opt/NexusAI/app.py
 Restart=always
 RestartSec=5
 

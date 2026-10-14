@@ -22,7 +22,7 @@ Telegram-бота [NexusAITg](https://github.com/MarkinF1/NexusAITg): те же 
 
 ```bash
 sudo apt install bubblewrap socat
-cd ~/projects/NexusAI
+cd /opt/NexusAI
 ./start.sh          # venv, зависимости, первый админ, systemd-сервис nexus-web
 ```
 

@@ -3,8 +3,8 @@
 # Разовый запуск в текущем терминале: .venv/bin/python app.py
 set -euo pipefail
 cd "$(dirname "$0")"
-# пути в nexus-web.service — от домашней папки (%h)
-[ "$PWD" = "$HOME/projects/NexusAI" ] || { echo "проект должен лежать в ~/projects/NexusAI, а не в $PWD" >&2; exit 1; }
+# пути в nexus-web.service — абсолютные, от /opt/NexusAI
+[ "$PWD" = "/opt/NexusAI" ] || { echo "проект должен лежать в /opt/NexusAI, а не в $PWD" >&2; exit 1; }
 
 [ -f .env ] || cp .env.example .env
 [ -x .venv/bin/python ] || python3 -m venv .venv
