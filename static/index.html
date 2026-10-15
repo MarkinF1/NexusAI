@@ -99,16 +99,18 @@
       <section class="account">
         <div id="account-name"></div>
         <div id="account-role" class="muted"></div>
+        <button id="skills-open">Скиллы сайта</button>
         <div class="actions">
           <button id="passwd">Сменить пароль</button>
           <button id="logout">Выйти</button>
         </div>
       </section>
       <section class="people">
-        <h4>Участники</h4>
+        <div class="people-head">
+          <h4>Участники</h4>
+          <button id="user-new" class="icon" aria-label="Добавить участника" title="Добавить участника"><svg width="20" height="20"><use href="#i-plus"/></svg></button>
+        </div>
         <ul id="users-list"></ul>
-        <button id="user-new">Добавить</button>
-        <button id="skills-open">Скиллы сайта</button>
       </section>
     </div>
     <div id="card"><p class="muted">Выберите участника слева.</p></div>

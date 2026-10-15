@@ -246,7 +246,7 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 #settings-back { display: none; margin-left: -10px; }
 /* Обычный участник видит только свой аккаунт: окно узкое, без списка и карточки */
 #settings:not(.admin) { width: min(420px, calc(100vw - 32px)); height: fit-content; }
-#settings:not(.admin) .people, #settings:not(.admin) #card { display: none; }
+#settings:not(.admin) .people, #settings:not(.admin) #card, #settings:not(.admin) #skills-open { display: none; }
 #settings:not(.admin) .users-side { flex: 1; width: auto; border: 0; }
 .users-layout { flex: 1; display: flex; min-height: 0; }
 .users-side { width: 220px; flex: none; padding: 16px 12px; background: var(--paper); border-right: 1px solid var(--line); overflow-y: auto; }
@@ -254,13 +254,14 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 #account-name { font-weight: 600; font-size: 16px; }
 .account .actions { margin-top: 12px; }
 .people { border-top: 1px solid var(--line); padding-top: 14px; }
-.people h4 { margin: 0 6px 8px; font-size: 14px; color: var(--muted); font-weight: 500; }
+.people-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 6px 6px; }
+.people h4 { margin: 0; font-size: 14px; color: var(--muted); font-weight: 500; }
 #users-list { list-style: none; padding: 0; margin: 0 0 12px; }
 #users-list button { width: 100%; text-align: left; margin-bottom: 2px; border-color: transparent; background: none; }
 #users-list button:hover { background: var(--soft); }
 #users-list button.active { background: var(--sheet); border-color: var(--line); font-weight: 500; }
-#user-new, #skills-open { width: 100%; }
-#skills-open { margin-top: 6px; }
+#skills-open { width: 100%; margin-top: 12px; }
+#skills-open + .actions { margin-top: 8px; }
 #card { flex: 1; display: flex; min-width: 0; }
 #card > .muted { padding: 20px; }
 .tabs { width: 150px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 18px 8px; border-right: 1px solid var(--line); }
@@ -350,7 +351,7 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   .users-layout, #card { flex-direction: column; }
   .users-side { flex: 1; width: auto; border: 0; background: var(--sheet); padding: 16px; }
   .account { padding: 0 0 18px; }
-  .people h4 { margin: 0 0 4px; }
+  .people-head { margin: 0 0 4px; }
   /* Список участников и разделов — строки во всю ширину со стрелкой, как в iOS */
   #users-list button, .tabs button {
     display: flex; justify-content: space-between; align-items: center; width: 100%;
@@ -359,7 +360,6 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   }
   #users-list button::after, .tabs button::after { content: "›"; color: var(--muted); font-size: 22px; line-height: 1; }
   #users-list button.active, .tabs button.active { background: none; border-color: var(--line); font-weight: 400; }
-  #user-new { margin-top: 12px; }
   #card { flex: 1; min-height: 0; }
   .tabs { width: auto; flex: 1; flex-direction: column; gap: 0; border: 0; padding: 4px 16px; }
   .panel { padding: 0 16px; }
