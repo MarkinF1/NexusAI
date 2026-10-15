@@ -347,6 +347,55 @@ def codex_limits(uid, sid, since):
     return events
 
 
+# Скиллы сайта — один плагин claude: data/plugin/skills/<имя>/SKILL.md. Модель видит
+# их как nexus:<имя>, читает и запускает их скрипты, но менять не может.
+PLUGIN = os.path.join(DATA, "plugin")
+# Python, node и пакеты, которые нужны скиллам (как ставить — в README).
+TOOLS = os.path.join(PLUGIN, "tools")
+
+
+# Скиллы аккаунта claude.ai: CLI хозяина сам скачивает их сюда. Админ выкладывает
+# нужные на сайт ссылками в плагин — обновления аккаунта подхватываются сами.
+SYNCED = os.path.expanduser("~/.claude/skills/synced")
+
+
+def skill_list(pattern):
+    """Скиллы по шаблону пути к SKILL.md: имя -> описание."""
+    found = {}
+    for path in sorted(glob.glob(pattern)):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            about = re.search(r"^description:\s*(.+)$", f.read(), re.M)
+        found[os.path.basename(os.path.dirname(path))] = about.group(1).strip(" '\"") if about else ""
+    return found
+
+
+def account_skills():
+    return skill_list(os.path.join(SYNCED, "*", "*", "SKILL.md"))
+
+
+def publish_skills(names):
+    """Выложить на сайт ровно эти скиллы аккаунта. Свои папки в плагине не трогаем."""
+    os.makedirs(os.path.join(PLUGIN, "skills"), exist_ok=True)
+    for path in glob.glob(os.path.join(SYNCED, "*", "*", "SKILL.md")):
+        source = os.path.dirname(path)
+        link = os.path.join(PLUGIN, "skills", os.path.basename(source))
+        if os.path.basename(source) in names and not os.path.lexists(link):
+            os.symlink(source, link)
+        elif os.path.basename(source) not in names and os.path.islink(link):
+            os.unlink(link)
+    return skills()
+
+
+def skills():
+    """Установленные скиллы: имя -> описание из SKILL.md."""
+    found = skill_list(os.path.join(PLUGIN, "skills", "*", "SKILL.md"))
+    if found and not os.path.exists(os.path.join(PLUGIN, ".claude-plugin", "plugin.json")):
+        os.makedirs(os.path.join(PLUGIN, ".claude-plugin"), exist_ok=True)
+        with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"), "w") as f:
+            json.dump({"name": "nexus", "version": "1.0.0"}, f)
+    return found
+
+
 def other_workspaces(uid, chat, access):
     """Рабочие папки чужих бесед, если пользователю нельзя их видеть."""
     if access["all_chats"]:
@@ -355,49 +404,115 @@ def other_workspaces(uid, chat, access):
     return [os.path.join(root, name) for name in sorted(os.listdir(root)) if name != chat]
 
 
-def protected(uid, cwd):
-    """Что нельзя менять без галочки «Изменение файлов». Корень рабочей папки
-    остаётся записываемым: иначе bwrap не создаёт там защитные файлы и Bash не стартует."""
-    return [memory_file(uid)] + [os.path.join(cwd, n) for n in ("files", "MEMORY.md", "CLAUDE.md", "AGENTS.md")]
+def protected(uid, cwd, access):
+    """Что модели нельзя менять: files/ и инструкции без «Изменения файлов», обе памяти
+    без «Изменения памяти». Корень рабочей папки остаётся записываемым: иначе bwrap
+    не создаёт там защитные файлы и Bash не стартует."""
+    paths = [] if access["write"] else [os.path.join(cwd, n) for n in ("files", "CLAUDE.md", "AGENTS.md")]
+    return paths + ([] if access["memory"] else [memory_file(uid), os.path.join(cwd, "MEMORY.md")])
+
+
+def patterns(commands):
+    """«git push» совпадает и с самой командой, и с ней же с аргументами."""
+    return list(commands) + [f"{c} *" for c in commands if "*" not in c]
+
+
+def bash_rules(commands):
+    return [f"Bash({p})" for p in patterns(commands)]
 
 
 def claude_args(uid, meta, cwd, access):
     found = glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl"))
     data = data_dir(uid)
     others = other_workspaces(uid, meta["id"], access)
+    writes = access["write"] or access["memory"]
+    installed = skills() if access["skills"] else {}
     tools = (["Read", "Glob", "Grep"] + (["Bash"] if access["bash"] else [])
-             + (["Write", "Edit", "NotebookEdit"] if access["write"] else [])
-             + (["WebFetch", "WebSearch"] if access["web"] else []))
+             + (["Write", "Edit", "NotebookEdit"] if writes else [])
+             + (["WebFetch", "WebSearch"] if access["web"] else [])
+             + (["Skill"] if installed else []))
+    allowed = list(tools)
+    commands = access["bash"] and access["commands"]
+    # Белый список команд: в dontAsk всё, что не в allow, — отказ. Но
+    # autoAllowBashIfSandboxed разрешил бы любую команду, поэтому он выключается.
+    only_listed = commands and bool(access["allowed_commands"])
+    if only_listed:
+        i = allowed.index("Bash")
+        allowed[i:i + 1] = bash_rules(access["allowed_commands"])
+    # Опасная зона: эти команды идут мимо песочницы с правами хозяина сервера.
+    # excludedCommands только выводит их наружу, разрешение нужно отдельно.
+    outside = access["unsandboxed_commands"] if access["bash"] and access["unsandboxed"] else []
+    allowed += bash_rules(outside)
+    # Без allowedDomains прокси песочницы спрашивал бы разрешение на каждый хост,
+    # а в dontAsk это отказ. strictAllowlist — отказ наверняка.
+    network = {"allowedDomains": ["*"]} if access["network"] else {"strictAllowlist": True}
+    if access["web"] and access["site_allow"]:
+        # Пустой белый список — WebFetch не открывает ничего, остаётся только поиск.
+        i = allowed.index("WebFetch")
+        allowed[i:i + 1] = [f"WebFetch(domain:{d})" for d in access["allowed_sites"]]
+        # Правила WebFetch(domain:) CLI добавляет и в сеть песочницы — даже при
+        # strictAllowlist. deniedDomains действует только на команды: закрываем их там.
+        if not access["network"] and access["allowed_sites"]:
+            network["deniedDomains"] = access["allowed_sites"]
     filesystem = {"denyRead": [os.path.expanduser("~"), HERE, DATA] + others,
-                  "allowRead": [data], "allowWrite": [data] if access["write"] else []}
+                  "allowRead": [data], "allowWrite": [data] if writes else []}
     # --add-dir делает папку данных записываемой и для Bash — запреты точечные.
-    deny_write = others + ([] if access["write"] else protected(uid, cwd))
-    if deny_write:
-        filesystem["denyWrite"] = deny_write
-    # Файловые инструменты: правило Read закрывает и Glob/Grep, абсолютный путь — через //.
-    deny = [f"{tool}(/{path}/**)" for path in others for tool in ("Read", "Edit")]
+    # Скиллы аккаунта — ссылки в домашнюю папку: открываем настоящие пути включённых.
+    linked = [os.path.realpath(os.path.join(PLUGIN, "skills", name)) for name in installed
+              if os.path.islink(os.path.join(PLUGIN, "skills", name)) and name not in access["skills_off"]]
+    locked = protected(uid, cwd, access) + ([PLUGIN] + linked if installed else [])
+    if installed:
+        # Только для Bash: --add-dir открыл бы её и Read, но песочница кладёт в корень
+        # рабочей папки заглушки (.mcp.json), а корень закрыт на запись — Bash не стартует.
+        filesystem["allowRead"] += [PLUGIN] + linked
+    if others + locked:
+        filesystem["denyWrite"] = others + locked
+    # Файловые инструменты: правило Read закрывает и Glob/Grep, Edit — Write и
+    # NotebookEdit; абсолютный путь — через //. Для файла и папки разные шаблоны.
+    deny = ([f"{tool}(/{path}/**)" for path in others for tool in ("Read", "Edit")]
+            + [rule for path in locked for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")])
+    if commands:
+        deny += bash_rules(access["denied_commands"])
+    if access["web"] and access["site_deny"]:
+        # Запрет WebFetch(domain:) CLI переносит и в сеть песочницы: curl туда тоже не пустит.
+        deny += [f"WebFetch(domain:{d})" for d in access["denied_sites"]]
+    # Снятый скилл остаётся в списке у модели (skillOverrides из --settings его не
+    # прячет), но запуск блокируется.
+    deny += [f"Skill(nexus:{name})" for name in access["skills_off"] if name in installed]
+    settings = {}
+    if installed:
+        # --safe-mode выключил бы и наш плагин, поэтому то же закрываем по отдельности.
+        # Проверено ловушками в рабочей папке: .claude/skills, .claude/settings.json,
+        # .mcp.json и CLAUDE.md в родительской папке не срабатывают. Хуки и MCP
+        # выполнялись бы вне песочницы.
+        settings = {"disableBundledSkills": True, "disableAllHooks": True, "disableWorkflows": True,
+                    "disableSkillShellExecution": True, "claudeMdExcludes": ["**/*"],
+                    "enabledPlugins": {"cc-plugin-plugin-authoring@builtin": False,
+                                       "cc-plugin-agents-md@builtin": False}}
+    # Без скиллов --safe-mode выключает CLAUDE.md, хуки, скиллы, MCP и плагины разом.
+    mode = ["--strict-mcp-config", "--plugin-dir", PLUGIN] if installed else ["--safe-mode"]
     return [
         CLAUDE_BIN, "-p",
         "--input-format", "stream-json",
         "--output-format", "stream-json", "--verbose",
-        "--safe-mode",  # без CLAUDE.md, хуков, скиллов, MCP и плагинов
+        *mode,
         "--restricted", "--tools", ",".join(tools),
-        "--allowedTools", ",".join(tools),
         "--permission-mode", "dontAsk",
         "--add-dir", data,  # файловым инструментам — та же папка, что и Bash
         "--settings", json.dumps({
+            **settings,
             "sandbox": {
                 "enabled": True, "failIfUnavailable": True,
-                "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                "autoAllowBashIfSandboxed": not only_listed, "allowUnsandboxedCommands": False,
+                "excludedCommands": patterns(outside),
                 # Закрыто всё хозяйство сайта (база, токены подписок, чужие
                 # пользователи), открыта только папка данных этого пользователя.
                 "filesystem": filesystem,
-                # Без allowedDomains прокси песочницы спрашивал бы разрешение на
-                # каждый хост, а в dontAsk это отказ. strictAllowlist — отказ наверняка.
                 # WebFetch(domain:*) в allow не кладём: оно открыло бы сеть и для Bash.
-                "network": {"allowedDomains": ["*"]} if access["network"] else {"strictAllowlist": True},
+                "network": network,
             },
-            "permissions": {"deny": deny},
+            # Правила списком, а не через --allowedTools: там пробел и запятая — разделители.
+            "permissions": {"allow": allowed, "deny": deny},
         }),
         "--system-prompt-snapshot", "off",
         "--model", meta["model"],
@@ -444,7 +559,12 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None):
     files = []
     if meta["engine"] == "claude":
         args = claude_args(uid, meta, cwd, access)
-        env = model_env(CLAUDE_CONFIG_DIR=claude_home(uid))
+        # Без --safe-mode (скиллы) CLAUDE.md и автопамять выключаются только так.
+        env = model_env(CLAUDE_CONFIG_DIR=claude_home(uid), CLAUDE_CODE_DISABLE_CLAUDE_MDS="1",
+                        CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", NODE_PATH=os.path.join(TOOLS, "node_modules"))
+        # Инструменты скиллов первыми: без «Скиллов» песочница их прячет и
+        # команды находятся в системе как обычно.
+        env["PATH"] = os.pathsep.join([os.path.join(TOOLS, "bin"), os.path.join(TOOLS, "venv", "bin"), env["PATH"]])
         payload = build_input(prompt, images)
         parse = claude_events
     else:

@@ -431,9 +431,11 @@ $("#files-open").onclick = async () => {
 const ACCESS = {
   claude: [
     ["bash", "Запуск команд", "Bash в песочнице: распаковка архивов, скрипты, конвертация файлов."],
-    ["write", "Изменение файлов", "Write и Edit: создавать и править файлы в рабочей папке, вести память. Без этого модель только читает."],
+    ["write", "Изменение файлов", "Write и Edit: создавать и править файлы в files/. Без этого модель их только читает; черновики в корне рабочей папки остаются доступны."],
+    ["memory", "Изменение памяти", "Вести MEMORY.md: общую память пользователя и заметки беседы. Без этого модель память только читает."],
     ["network", "Интернет для команд", "Команды Bash (curl, pip, git) могут выходить в сеть."],
     ["web", "Веб-поиск и сайты", "WebSearch и WebFetch: поиск и чтение страниц. Сеть для команд они не открывают."],
+    ["skills", "Скиллы", "Готовые инструкции и скрипты для задач: документы, таблицы, PDF. Работают в песочнице с теми же правами; скриптам обычно нужен «Запуск команд»."],
     ["all_chats", "Файлы других бесед", "Модель видит рабочие папки всех бесед пользователя. Без этого — только текущую беседу и общую память."],
   ],
   codex: [
@@ -444,6 +446,49 @@ const ACCESS = {
   ],
 };
 const ACCESS_NOTE = { codex: "Запуск команд у Codex отключить нельзя: команды всегда идут в песочнице." };
+// Опасная зона: действия вне песочницы. Галочки нужны с Bash, без него неактивны.
+const ACCESS_DANGER = {
+  claude: [
+    ["unsandboxed", "Команды вне песочницы",
+      "Перечисленные команды выполняются на сервере напрямую, с правами его хозяина. Наружу выходит только одиночный вызов: «docker ps» — да, «docker ps && cat …» или «… | docker …» целиком остаются в песочнице. Команда без аргументов совпадает с любыми аргументами: «docker» — это и «docker run …».",
+      [["unsandboxed_commands", "Команды вне песочницы", "docker ps\nsystemctl --user status"]]],
+  ],
+};
+const DANGER_NOTE = "Модель сможет выйти из песочницы: прочитать токены подписок, базу сайта и данные других пользователей, менять любые файлы хозяина сервера. Давайте только себе и только точные команды: «python», «bash», «sh» или «docker» без аргументов — это полный доступ к серверу.";
+
+// Уточнения под галочкой сети: видны, только пока она стоит. Ключи — как users.LISTS.
+const ACCESS_MORE = {
+  claude: {
+    web: (a) => [
+      subOption(a, "site_allow", "Белый список сайтов",
+        "Модель открывает только перечисленные сайты. Поиск находит любые, но прочитать страницу вне списка нельзя. Пустой список — сайты не открываются вовсе.",
+        [["allowed_sites", "Разрешённые сайты", "docs.python.org\n*.wikipedia.org"]]),
+      subOption(a, "site_deny", "Чёрный список сайтов",
+        "Перечисленные сайты закрыты, остальные открыты. Запрет действует и на команды с интернетом (curl, pip).",
+        [["denied_sites", "Запрещённые сайты", "vk.com\n*.vk.com"]]),
+      el("p", "muted", "Адрес по одному на строку. example.com — только этот адрес, без www; *.example.com — все поддомены, но не сам example.com."),
+    ],
+    skills: (a) => {
+      const names = Object.keys(card.skills);
+      if (!names.length) return [el("p", "muted", "Скиллов на сайте нет: отметьте их в «Скиллы сайта».")];
+      const list = el("div", "skills");
+      for (const name of names) {
+        const option = el("div", "option");
+        option.append(checkbox(name, !a.skills_off.includes(name), (v) => {
+          a.skills_off = v ? a.skills_off.filter((x) => x !== name) : [...a.skills_off, name];
+        }), el("div", "muted", card.skills[name]));
+        list.append(option);
+      }
+      return [list, el("p", "muted", "Снятый скилл модель видит в списке, но запустить не может.")];
+    },
+    bash: (a) => [
+      subOption(a, "commands", "Разрешение и запрет отдельных команд",
+        "«git push» совпадает и с самой командой, и с любыми аргументами. Если список разрешённых не пуст, запускать можно только их; команды, которые лишь читают (ls, cat, grep), CLI разрешает всегда. Запрещённые нельзя никогда, в том числе внутри «a && b». Запрет — защита от случайности: ту же команду можно вызвать через python или sh, если они разрешены.",
+        [["allowed_commands", "Разрешённые команды (пусто — все, кроме запрещённых)", "git status\npython"],
+         ["denied_commands", "Запрещённые команды", "rm\ngit push"]]),
+    ],
+  },
+};
 let card = null, cardTab = "info";
 const mobile = matchMedia("(max-width: 760px)");
 
@@ -452,7 +497,7 @@ const mobile = matchMedia("(max-width: 760px)");
 function setLevel(level) {
   $("#settings").dataset.level = level;
   const title = level === "user" ? card.user.name
-    : level === "section" ? (card ? TABS[cardTab] : "Новый участник") : "Настройки";
+    : level === "section" ? (card ? TABS[cardTab] : $("#card h3")?.textContent) : "Настройки";
   $("#settings-title").textContent = mobile.matches ? title : "Настройки";
 }
 
@@ -507,6 +552,29 @@ function numberField(label, value, onchange, disabled, max) {
   input.disabled = !!disabled;
   input.oninput = () => { onchange(Math.max(0, Math.min(max || Infinity, parseInt(input.value) || 0))); changed(); };
   l.append(input);
+  return l;
+}
+
+// Галочка с описанием; пока она стоит, под ней поля списков [ключ, подпись, пример].
+function subOption(access, key, name, about, lists, disabled) {
+  const option = el("div", "option");
+  option.append(checkbox(name, access[key], (v) => { access[key] = v; showCard(); }, disabled), el("div", "muted", about));
+  if (access[key] && !disabled) {
+    for (const [list, label, example] of lists) {
+      option.append(listField(label, access[list], (v) => { access[list] = v; }, example));
+    }
+  }
+  return option;
+}
+
+function listField(label, list, onchange, placeholder) {
+  const l = el("label", "list", label);
+  const area = el("textarea");
+  area.rows = 3;
+  area.placeholder = placeholder;
+  area.value = list.join("\n");
+  area.oninput = () => { onchange(area.value.split("\n").map((x) => x.trim()).filter(Boolean)); changed(); };
+  l.append(area);
   return l;
 }
 
@@ -610,8 +678,23 @@ function showCard() {
       box.append(legend);
       for (const [key, name, about] of ACCESS[engine]) {
         const option = el("div", "option");
-        option.append(checkbox(name, access[key], (v) => { access[key] = v; }), el("div", "muted", about));
+        option.append(checkbox(name, access[key], (v) => { access[key] = v; showCard(); }), el("div", "muted", about));
+        const more = ACCESS_MORE[engine]?.[key];
+        if (more && access[key]) {
+          const sub = el("div", "sub");
+          sub.append(...more(access));
+          option.append(sub);
+        }
         box.append(option);
+      }
+      if (ACCESS_DANGER[engine]) {
+        const danger = el("div", "danger-zone");
+        danger.append(el("h4", "", "Опасная зона"), el("p", "", DANGER_NOTE));
+        for (const [key, name, about, lists] of ACCESS_DANGER[engine]) {
+          danger.append(subOption(access, key, name, about, lists, !access.bash));
+        }
+        if (!access.bash) danger.append(el("p", "muted", "Нужен «Запуск команд»."));
+        box.append(danger);
       }
       if (ACCESS_NOTE[engine]) box.append(el("p", "muted", ACCESS_NOTE[engine]));
       panel.append(box);
@@ -686,6 +769,33 @@ $("#user-new").onclick = () => {
       const { id } = await api("/api/users", { method: "POST", json: { name: f.get("name"), password: f.get("password"), admin: f.get("admin") === "on" } });
       loadUsers(id);
     } catch (err) { alert(err.message); }
+  };
+  $("#card").replaceChildren(form);
+  setLevel("section");
+};
+
+// Скиллы аккаунта claude.ai, выложенные на сайт; пользоваться ими можно по галочке «Скиллы».
+$("#skills-open").onclick = async () => {
+  let data;
+  try { data = await api("/api/skills"); } catch (e) { alert(e.message); return; }
+  card = null;
+  document.querySelectorAll("#users-list button").forEach((b) => b.classList.remove("active"));
+  const on = new Set(Object.keys(data.site));
+  const form = el("form", "site-skills");
+  form.append(el("h3", "", "Скиллы сайта"),
+    el("p", "muted", "Скиллы вашего аккаунта claude.ai. Отмеченные доступны всем, у кого в «Доступе» стоит галочка «Скиллы». Обновления из аккаунта подхватываются сами."));
+  for (const [name, about] of Object.entries(data.account)) {
+    const option = el("div", "option");
+    option.append(checkbox(name, on.has(name), (v) => { if (v) on.add(name); else on.delete(name); }), el("div", "muted", about));
+    form.append(option);
+  }
+  if (!Object.keys(data.account).length) form.append(el("p", "muted", "Скиллов аккаунта нет: их скачивает Claude Code хозяина сервера в ~/.claude/skills/synced."));
+  const own = Object.keys(data.site).filter((name) => !(name in data.account));
+  if (own.length) form.append(el("p", "muted", "Свои скиллы из data/plugin/skills: " + own.join(", ")));
+  form.append(el("button", "primary", "Сохранить"));
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/api/skills", { method: "PUT", json: [...on] }); alert("Сохранено"); } catch (err) { alert(err.message); }
   };
   $("#card").replaceChildren(form);
   setLevel("section");

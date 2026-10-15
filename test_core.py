@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -158,12 +159,13 @@ class Permissions(unittest.TestCase):
         self.assertIn("Bash", args[args.index("--tools") + 1])
         self.assertEqual(settings["sandbox"]["network"], {"allowedDomains": ["*"]})
         # WebFetch(domain:*) открыл бы сеть Bash в обход галочки «Интернет».
-        self.assertEqual(settings["permissions"], {"deny": []})
+        self.assertEqual(settings["permissions"], {"allow": args[args.index("--tools") + 1].split(","), "deny": []})
+        self.assertTrue(settings["sandbox"]["autoAllowBashIfSandboxed"])
         self.assertNotIn("denyWrite", settings["sandbox"]["filesystem"])
 
     def test_claude_restricted(self):
         other = core.workspace(3, core.create_chat(3, "claude", "sonnet")["id"])
-        args, settings = self.claude(bash=False, write=False, network=False, web=False, all_chats=False)
+        args, settings = self.claude(bash=False, write=False, memory=False, network=False, web=False, all_chats=False)
         tools = args[args.index("--tools") + 1].split(",")
         self.assertEqual(tools, ["Read", "Glob", "Grep"])
         sandbox = settings["sandbox"]
@@ -177,6 +179,87 @@ class Permissions(unittest.TestCase):
         self.assertIn(core.memory_file(3), fs["denyWrite"])
         self.assertEqual(fs["allowWrite"], [])
         self.assertIn(f"Read(/{other}/**)", settings["permissions"]["deny"])
+
+    def test_claude_split(self):
+        # Память без файлов: Write/Edit есть, но files/ закрыта и для них, и для Bash.
+        args, settings = self.claude(write=False)
+        self.assertIn("Edit", args[args.index("--tools") + 1])
+        files = os.path.join(self.cwd, "files")
+        self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"],
+                         [files, os.path.join(self.cwd, "CLAUDE.md"), os.path.join(self.cwd, "AGENTS.md")])
+        self.assertIn(f"Edit(/{files}/**)", settings["permissions"]["deny"])
+        _, settings = self.claude(memory=False)
+        self.assertIn(f"Edit(/{core.memory_file(3)})", settings["permissions"]["deny"])
+
+    def test_claude_lists(self):
+        lists = dict(commands=True, allowed_commands=["git status", "ls *"], denied_commands=["rm"],
+                     site_allow=True, allowed_sites=[], site_deny=True, denied_sites=["vk.com"])
+        args, settings = self.claude(**lists)
+        perms = settings["permissions"]
+        self.assertTrue({"Bash(git status)", "Bash(git status *)", "Bash(ls *)"} <= set(perms["allow"]))
+        self.assertNotIn("Bash", perms["allow"])
+        self.assertNotIn("Bash(ls * *)", perms["allow"])
+        # Пустой белый список сайтов: WebFetch есть, но не разрешён ни на один домен.
+        self.assertIn("WebFetch", args[args.index("--tools") + 1])
+        self.assertFalse([a for a in perms["allow"] if a.startswith("WebFetch")])
+        self.assertTrue({"Bash(rm)", "Bash(rm *)", "WebFetch(domain:vk.com)"} <= set(perms["deny"]))
+        self.assertFalse(settings["sandbox"]["autoAllowBashIfSandboxed"])
+        # Белый список сайтов CLI переносит в сеть песочницы — без «Интернета» закрываем его для команд.
+        _, settings = self.claude(network=False, site_allow=True, allowed_sites=["a.ru"])
+        self.assertEqual(settings["sandbox"]["network"], {"strictAllowlist": True, "deniedDomains": ["a.ru"]})
+        self.assertIn("WebFetch(domain:a.ru)", settings["permissions"]["allow"])
+        # Вне песочницы: исключение из sandbox и разрешение — только с галочкой и Bash.
+        _, settings = self.claude(unsandboxed=True, unsandboxed_commands=["docker ps"])
+        self.assertEqual(settings["sandbox"]["excludedCommands"], ["docker ps", "docker ps *"])
+        self.assertIn("Bash(docker ps *)", settings["permissions"]["allow"])
+        _, settings = self.claude(unsandboxed=True, unsandboxed_commands=["docker ps"], bash=False)
+        self.assertEqual(settings["sandbox"]["excludedCommands"], [])
+        self.assertFalse(ALL["unsandboxed"])
+        # Без Bash и поиска списки не действуют.
+        _, settings = self.claude(**lists, bash=False, web=False)
+        self.assertEqual(settings["permissions"]["deny"], [])
+
+    def test_claude_skills(self):
+        # Иначе следующие тесты увидят установленные скиллы: галочка включена по умолчанию.
+        self.addCleanup(shutil.rmtree, core.PLUGIN, True)
+        # Скиллов не установлено — галочка ничего не меняет, остаётся --safe-mode.
+        args, _ = self.claude(skills=True)
+        self.assertIn("--safe-mode", args)
+        for name in ("docx", "pdf"):
+            os.makedirs(os.path.join(core.PLUGIN, "skills", name), exist_ok=True)
+            with open(os.path.join(core.PLUGIN, "skills", name, "SKILL.md"), "w") as f:
+                f.write(f"---\nname: {name}\ndescription: '{name} files'\n---\n")
+        self.assertEqual(core.skills(), {"docx": "docx files", "pdf": "pdf files"})
+        args, settings = self.claude(skills=True, skills_off=["pdf"])
+        self.assertNotIn("--safe-mode", args)
+        self.assertIn("--strict-mcp-config", args)
+        self.assertEqual(args[args.index("--plugin-dir") + 1], core.PLUGIN)
+        self.assertIn("Skill", args[args.index("--tools") + 1])
+        self.assertIn("Skill(nexus:pdf)", settings["permissions"]["deny"])
+        self.assertTrue(settings["disableAllHooks"] and settings["disableSkillShellExecution"])
+        # Скрипты скиллов читать можно, менять нельзя.
+        self.assertIn(core.PLUGIN, settings["sandbox"]["filesystem"]["allowRead"])
+        self.assertIn(core.PLUGIN, settings["sandbox"]["filesystem"]["denyWrite"])
+        self.assertIn(f"Edit(/{core.PLUGIN}/**)", settings["permissions"]["deny"])
+        args, _ = self.claude(skills=False)
+        self.assertIn("--safe-mode", args)  # галочка снята
+        # Скилл аккаунта выкладывается ссылкой; песочнице открыт её настоящий путь.
+        synced = os.path.join(TMP, "synced", "bucket", "xlsx")
+        os.makedirs(synced)
+        with open(os.path.join(synced, "SKILL.md"), "w") as f:
+            f.write("---\nname: xlsx\ndescription: tables\n---\n")
+        with unittest.mock.patch.object(core, "SYNCED", os.path.dirname(os.path.dirname(synced))):
+            self.assertEqual(core.account_skills(), {"xlsx": "tables"})
+            self.assertEqual(set(core.publish_skills({"xlsx"})), {"docx", "pdf", "xlsx"})
+            _, settings = self.claude(skills=True)
+            self.assertIn(synced, settings["sandbox"]["filesystem"]["allowRead"])
+            self.assertIn(synced, settings["sandbox"]["filesystem"]["denyWrite"])
+            _, settings = self.claude(skills=True, skills_off=["xlsx"])
+            self.assertNotIn(synced, settings["sandbox"]["filesystem"]["allowRead"])
+            # Снятие убирает только ссылку, свои папки плагина остаются.
+            self.assertEqual(set(core.publish_skills(set())), {"docx", "pdf"})
+        with self.assertRaises(ValueError):
+            users.clean({"access": {"claude": {"skills_off": ["../x"]}}})
 
     def test_codex(self):
         meta = {**self.meta, "engine": "codex", "sid": ""}
@@ -216,6 +299,16 @@ class Settings(unittest.TestCase):
         self.assertNotIn("bash", data["codex"])
         old = users.clean({"access": {"network": False}})["access"]
         self.assertEqual((old["claude"]["network"], old["codex"]["network"]), (False, False))
+        # Память раньше шла под «Изменением файлов»: без записи старый пользователь её не получает.
+        self.assertFalse(users.clean({"access": {"claude": {"write": False}}})["access"]["claude"]["memory"])
+        self.assertFalse(ALL["commands"] or ALL["site_allow"] or ALL["site_deny"])
+        conf = users.clean({"access": {"claude": {"allowed_sites": ["https://Docs.Python.org/3/", "*.пример.рф", " "],
+                                                  "denied_commands": ["  git   push "]}}})["access"]["claude"]
+        self.assertEqual(conf["allowed_sites"], ["docs.python.org", "*.xn--e1afmkfd.xn--p1ai"])
+        self.assertEqual(conf["denied_commands"], ["git push"])
+        for bad in ({"allowed_sites": ["a b"]}, {"denied_sites": ["x.com:8080"]}, {"allowed_commands": ["ls)"]}):
+            with self.assertRaises(ValueError):
+                users.clean({"access": {"claude": bad}})
 
 
 class Accounting(unittest.TestCase):

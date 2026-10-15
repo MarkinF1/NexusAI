@@ -416,6 +416,7 @@ def user_card(uid: int, user=Depends(admin_user)):
                       "running": sum(1 for owner, _ in jobs if owner == uid),
                       "disk": usage.disk(uid), "limits": usage.summary(uid, data)},
             "catalog": {e: catalog[e] for e in core.engines()},
+            "skills": core.skills(),
             "subscription": usage.global_snapshot()}
 
 
@@ -427,6 +428,17 @@ def user_settings(uid: int, body: dict, user=Depends(admin_user)):
         return users.save_settings(uid, body)
     except (ValueError, TypeError, AttributeError) as e:
         raise HTTPException(400, f"Неверные настройки: {e}")
+
+
+@app.get("/api/skills")
+def site_skills(user=Depends(admin_user)):
+    """Скиллы аккаунта claude.ai и какие из них выложены на сайт."""
+    return {"account": core.account_skills(), "site": core.skills()}
+
+
+@app.put("/api/skills")
+def publish_skills(body: list[str], user=Depends(admin_user)):
+    return {"account": core.account_skills(), "site": core.publish_skills(set(body))}
 
 
 class NewUser(BaseModel):

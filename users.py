@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -16,9 +17,17 @@ import core
 
 LOGIN_TTL = 30 * 24 * 3600
 # Галочки «Доступ» у каждой сети свои: что модели можно делать в песочнице.
-# Shell у codex не отключается, поэтому галочки «Запуск команд» у него нет.
-ACCESS = {"claude": ("bash", "write", "network", "web", "all_chats"),
-          "codex": ("write", "network", "web", "all_chats")}
+# Значение — умолчание для того, у кого галочки ещё нет: прежние права остаются,
+# новые ограничения выключены. Shell у codex не отключается, поэтому галочки
+# «Запуск команд» у него нет.
+ACCESS = {"claude": {"bash": True, "write": True, "memory": True, "network": True, "web": True,
+                     "all_chats": True, "site_allow": False, "site_deny": False, "commands": False,
+                     "unsandboxed": False, "skills": True},
+          "codex": {"write": True, "network": True, "web": True, "all_chats": True}}
+# Списки к галочкам site_allow, site_deny, commands и unsandboxed; skills_off — снятые скиллы.
+LISTS = {"claude": ("allowed_sites", "denied_sites", "allowed_commands", "denied_commands",
+                    "unsandboxed_commands", "skills_off"), "codex": ()}
+SITE = re.compile(r"(\*\.)?([a-z0-9-]+\.)*[a-z0-9-]+")
 
 
 def db():
@@ -171,7 +180,40 @@ def engine_access(access, engine):
     conf = access.get(engine)
     if not isinstance(conf, dict):
         conf = access  # старый формат: одни галочки на все сети
-    return {k: bool(conf.get(k, True)) for k in ACCESS[engine]}
+    result = {k: bool(conf.get(k, default)) for k, default in ACCESS[engine].items()}
+    if "memory" in result and "memory" not in conf:
+        result["memory"] = result["write"]  # раньше память шла под «Изменением файлов»
+    for key in LISTS[engine]:
+        check = site if key.endswith("sites") else skill if key == "skills_off" else command
+        result[key] = [check(v) for v in conf.get(key) or [] if str(v).strip()]
+    return result
+
+
+def site(value):
+    """«https://Пример.рф/путь» -> «xn--e1afmkfd.xn--p1ai»: в правило CLI идёт только хост."""
+    host = re.sub(r"^[a-z]+://", "", str(value).strip().lower()).split("/")[0]
+    try:
+        host = host.encode("idna").decode()
+    except UnicodeError:
+        pass  # SITE ниже отклонит
+    if not SITE.fullmatch(host):
+        raise ValueError(f"Не похоже на адрес сайта: {value}")
+    return host
+
+
+def skill(value):
+    value = str(value).strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
+        raise ValueError(f"Неверное имя скилла: {value}")
+    return value
+
+
+def command(value):
+    value = " ".join(str(value).split())
+    # Скобки закрыли бы правило Bash(...) раньше времени.
+    if len(value) > 200 or "(" in value or ")" in value:
+        raise ValueError(f"Команда должна быть без скобок и короче 200 знаков: {value}")
+    return value
 
 
 def engine_conf(data, engine):

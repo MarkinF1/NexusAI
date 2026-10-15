@@ -1,0 +1,24 @@
+#!/bin/sh
+# LibreOffice для скиллов в песочнице. Загрузчик oosplash ищет канал только в /tmp,
+# а он закрыт на запись, поэтому запускаем soffice.bin, а папку канала передаём
+# через OSL_SOCKET_PATH. Новый профиль требует перезапуска (код 81), и прослойка
+# скилла для сокетов на нём завершает процесс до конвертации. Поэтому пустой
+# профиль заполняем готовым шаблоном.
+export OSL_SOCKET_PATH="${OSL_SOCKET_PATH:-${TMPDIR:-/tmp}}"
+profile=
+for a in "$@"; do
+    case "$a" in -env:UserInstallation=file://*) profile="${a#-env:UserInstallation=file://}" ;; esac
+done
+if [ -z "$profile" ]; then
+    profile="$OSL_SOCKET_PATH/lo-profile-$$"
+    set -- "-env:UserInstallation=file://$profile" "$@"
+fi
+if [ -z "$(ls -A "$profile" 2>/dev/null)" ]; then
+    mkdir -p "$profile" && cp -r "$(dirname "$0")/../lo-profile/." "$profile/"
+fi
+for try in 1 2 3; do
+    /usr/lib/libreoffice/program/soffice.bin "$@"
+    rc=$?
+    [ "$rc" = 81 ] || exit "$rc"
+done
+exit "$rc"

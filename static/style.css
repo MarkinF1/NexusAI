@@ -259,7 +259,8 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 #users-list button { width: 100%; text-align: left; margin-bottom: 2px; border-color: transparent; background: none; }
 #users-list button:hover { background: var(--soft); }
 #users-list button.active { background: var(--sheet); border-color: var(--line); font-weight: 500; }
-#user-new { width: 100%; }
+#user-new, #skills-open { width: 100%; }
+#skills-open { margin-top: 6px; }
 #card { flex: 1; display: flex; min-width: 0; }
 #card > .muted { padding: 20px; }
 .tabs { width: 150px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 18px 8px; border-right: 1px solid var(--line); }
@@ -281,6 +282,14 @@ table.info .logo { width: 14px; height: 14px; }
 .num input { width: 84px; padding: 5px 9px; margin-left: 4px; }
 .option { margin-bottom: 14px; }
 .option .muted { margin-left: 24px; max-width: 60ch; }
+.option .sub { margin: 10px 0 0 24px; padding-left: 12px; border-left: 2px solid var(--line); }
+.option .sub .option { margin-bottom: 10px; }
+.option .sub > .muted { margin-left: 0; }
+.list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0 24px; max-width: 60ch; font-size: 13.5px; color: var(--muted); }
+.danger-zone { border: 1.5px solid var(--error); border-radius: 10px; padding: 10px 14px 4px; margin: 6px 0 12px; }
+.danger-zone h4 { margin: 0 0 6px; color: var(--error); font-size: 14px; }
+.danger-zone > p:not(.muted) { margin: 0 0 12px; font-size: 13.5px; max-width: 60ch; }
+.list textarea { color: var(--ink); font-family: var(--mono); resize: vertical; }
 fieldset.engine {
   border: 1px solid var(--line); border-top: 3px solid var(--engine); border-radius: 12px;
   margin: 0 0 16px; padding: 12px 16px 6px; background: var(--raised);
@@ -291,6 +300,8 @@ fieldset.engine > p.muted { margin: 0 0 12px; }
 .model { padding: 8px 0; border-top: 1px solid var(--line); }
 .efforts { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 0 24px; font-size: 13.5px; }
 progress { width: 100%; margin: 12px 0; accent-color: var(--ink); }
+.site-skills { padding: 0 24px 24px; overflow-y: auto; }
+.site-skills .option .muted { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .new-user { display: flex; flex-direction: column; gap: 10px; padding: 0 24px; max-width: 380px; }
 input:disabled + *, label:has(input:disabled) { opacity: .45; }
 
