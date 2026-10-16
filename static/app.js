@@ -645,6 +645,10 @@ function showLibrary() {
     get.title = "Скачать";
     get.setAttribute("aria-label", "Скачать " + f.path);
     get.innerHTML = '<svg width="20" height="20"><use href="#i-download"/></svg>';
+    if (iosApp) {
+      const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), f.path.split("/").pop()); };
+      name.onclick = get.onclick = share;
+    }
     li.append(info, get);
     return li;
   }) : [el("li", "muted", library.length ? "Ничего не найдено" : "Пока пусто: сюда попадают вложения и файлы от модели")]));
