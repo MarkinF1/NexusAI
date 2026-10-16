@@ -55,14 +55,30 @@ CHAT_ID = re.compile(r"[0-9a-f]{32}")
 
 # --- Папки пользователя ---
 
+def creds_freshness(path):
+    """Чем больше, тем свежее: срок токена claude, иначе время записи файла."""
+    try:
+        with open(path) as f:
+            expires = (json.load(f).get("claudeAiOauth") or {}).get("expiresAt") or 0
+    except (OSError, ValueError, AttributeError):
+        expires = 0
+    try:
+        return expires, os.path.getmtime(path)
+    except OSError:
+        return expires, 0
+
+
 def link_creds(link, host):
     """Токен подписки один на всех, у каждого пользователя — симлинк на него."""
     if os.path.islink(link):
         return
     if os.path.exists(link):
-        # ponytail: обновление токена заменило симлинк файлом — возвращаем
-        # свежий токен хосту, иначе копии разойдутся и обе протухнут.
-        shutil.copy2(link, host)
+        # claude обновляет токен атомарной заменой файла, и симлинк становится
+        # копией. Refresh-токен одноразовый: старый у хоста уже не работает,
+        # поэтому возвращаем хосту копию — но только если она свежее. Иначе
+        # протухшая копия затрёт /login и токен бота NexusAITg.
+        if not os.path.exists(host) or creds_freshness(link) >= creds_freshness(host):
+            shutil.copy2(link, host)
         os.remove(link)
     os.symlink(host, link)
 
@@ -638,6 +654,10 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None):
         stop(proc)
         for path in files:
             os.remove(path)
+        # Обновлённый токен сразу отдаём хосту, а не при следующем запросе:
+        # бот NexusAITg и остальные пользователи читают его оттуда.
+        if meta["engine"] == "claude":
+            claude_home(uid)
     raw_err = (await stderr).decode(errors="replace").strip()
     if proc.returncode != 0 or fatal or not said:
         raise RuntimeError(err or raw_err or f"{meta['engine']} завершился с ошибкой")
