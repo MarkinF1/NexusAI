@@ -18,15 +18,17 @@ import core
 LOGIN_TTL = 30 * 24 * 3600
 # Галочки «Доступ» у каждой сети свои: что модели можно делать в песочнице.
 # Значение — умолчание для того, у кого галочки ещё нет: прежние права остаются,
-# новые ограничения выключены. Shell у codex не отключается, поэтому галочки
-# «Запуск команд» у него нет.
+# новые ограничения выключены.
 ACCESS = {"claude": {"bash": True, "write": True, "memory": True, "network": True, "web": True,
                      "all_chats": True, "site_allow": False, "site_deny": False, "commands": False,
                      "unsandboxed": False, "skills": True},
-          "codex": {"write": True, "network": True, "web": True, "all_chats": True}}
+          "codex": {"bash": True, "write": True, "memory": True, "network": True,
+                    "web": True, "web_cached": False, "all_chats": True,
+                    "multi_agent": True, "site_allow": False, "site_deny": False}}
 # Списки к галочкам site_allow, site_deny, commands и unsandboxed; skills_off — снятые скиллы.
 LISTS = {"claude": ("allowed_sites", "denied_sites", "allowed_commands", "denied_commands",
-                    "unsandboxed_commands", "skills_off"), "codex": ()}
+                    "unsandboxed_commands", "skills_off"),
+         "codex": ("allowed_sites", "denied_sites")}
 SITE = re.compile(r"(\*\.)?([a-z0-9-]+\.)*[a-z0-9-]+")
 
 
@@ -240,6 +242,8 @@ def engine_access(access, engine):
     result = {k: bool(conf.get(k, default)) for k, default in ACCESS[engine].items()}
     if "memory" in result and "memory" not in conf:
         result["memory"] = result["write"]  # раньше память шла под «Изменением файлов»
+    if engine == "codex" and not result["write"]:
+        result["memory"] = False  # CLI не поддерживает writable-root в виде отдельного файла
     for key in LISTS[engine]:
         check = site if key.endswith("sites") else skill if key == "skills_off" else command
         result[key] = [check(v) for v in conf.get(key) or [] if str(v).strip()]

@@ -546,22 +546,48 @@ def claude_args(uid, meta, cwd, access, channel="web"):
 
 
 def codex_args(uid, meta, cwd, files, access, channel="web"):
-    """Запуск команд у codex не отключается: shell есть всегда, но в песочнице."""
+    """Права Codex CLI: инструменты, файловая песочница и сеть команд."""
     args = [CODEX_BIN, "exec", "-C", cwd] + (["resume", meta["sid"]] if meta["sid"] else []) + [
         "--json", "--skip-git-repo-check", "-m", meta["model"]]
     if meta["effort"]:
         args += ["-c", f'model_reasoning_effort="{meta["effort"]}"']
     mode = "write" if access["write"] else "read"
-    paths = ", ".join(f"{json.dumps(p)} = \"{rule}\"" for p, rule in
-                      [(data_dir(uid), mode)] + [(p, "deny") for p in other_workspaces(uid, meta["id"], access)])
+    data = data_dir(uid)
+    rules = {data: mode}
+    # Запрет памяти действует и в доступных соседних беседах. Не выдаём write
+    # отдельным файлам: Codex 0.154.0 считает их каталогами и ломает bwrap.
+    if not access["memory"]:
+        rules[memory_file(uid)] = "read"
+        workspaces = glob.glob(os.path.join(data, "workspaces", "*")) if access["all_chats"] else [cwd]
+        for path in workspaces:
+            if os.path.isdir(path):
+                rules[os.path.join(path, "MEMORY.md")] = "read"
+    rules.update((p, "deny") for p in other_workspaces(uid, meta["id"], access))
+    paths = ", ".join(f"{json.dumps(p)} = {json.dumps(rule)}" for p, rule in rules.items())
+    filtered_network = access["network"] and (access["site_allow"] or access["site_deny"])
+    domains = {}
+    if filtered_network:
+        domains.update((d, "allow") for d in (access["allowed_sites"] if access["site_allow"] else ["*"]))
+        if access["site_deny"]:
+            domains.update((d, "deny") for d in access["denied_sites"])
+    domain_rules = ", ".join(f"{json.dumps(d)} = {json.dumps(rule)}" for d, rule in domains.items())
+    web = ("cached" if access["web_cached"] else "live") if access["web"] else "disabled"
     # Профиль прав сильнее sandbox_mode: читать и писать можно только папку данных
     # пользователя, из остального — системные каталоги на чтение.
     for setting in ('default_permissions="chat"', 'approval_policy="never"',
                     'permissions.chat.filesystem={":minimal" = "read", %s}' % paths,
                     "permissions.chat.network.enabled=" + ("true" if access["network"] else "false"),
-                    'web_search="%s"' % ("live" if access["web"] else "disabled"),
+                    "features.shell_tool=" + ("true" if access["bash"] else "false"),
+                    "features.multi_agent=" + ("true" if access["multi_agent"] else "false"),
+                    "features.network_proxy.enabled=" + ("true" if filtered_network else "false"),
+                    "permissions.chat.network.domains={%s}" % domain_rules,
+                    'web_search="%s"' % web,
                     'developer_instructions=' + json.dumps(system_prompt(uid, cwd, channel))):
         args += ["-c", setting]
+    if filtered_network:
+        # Свой случайный порт у каждого запроса: параллельные беседы не конфликтуют.
+        args += ["-c", 'permissions.chat.network.proxy_url="http://127.0.0.1:0"',
+                 "-c", 'permissions.chat.network.socks_url="http://127.0.0.1:0"']
     for path in files:
         args += ["-i", path]
     return args + ["-"]  # промпт со stdin: длинный текст в аргумент не влезет

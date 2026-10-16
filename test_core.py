@@ -276,6 +276,45 @@ class Permissions(unittest.TestCase):
         self.assertIn('"%s" = "read"' % core.data_dir(3), off)
 
 
+    def codex_settings(self, **changes):
+        import tomllib
+        meta = {**self.meta, "engine": "codex", "sid": ""}
+        args = core.codex_args(3, meta, self.cwd, [], {**ACCESS["codex"], **changes})
+        return tomllib.loads("\n".join(args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-c"))
+
+    def test_codex_memory_and_isolation(self):
+        other = core.workspace(3, core.create_chat(3, "codex", "test")["id"])
+        fs = self.codex_settings(memory=False)["permissions"]["chat"]["filesystem"]
+        self.assertEqual(fs[core.data_dir(3)], "write")
+        for path in (core.memory_file(3), os.path.join(self.cwd, "MEMORY.md"), os.path.join(other, "MEMORY.md")):
+            self.assertEqual(fs[path], "read")
+        fs = self.codex_settings(write=False, memory=True, all_chats=False)["permissions"]["chat"]["filesystem"]
+        self.assertEqual(fs[core.data_dir(3)], "read")
+        self.assertNotIn(core.memory_file(3), fs)  # наследует общий read; file-write ломает CLI
+        self.assertNotIn(os.path.join(self.cwd, "MEMORY.md"), fs)
+        self.assertEqual(fs[other], "deny")
+        self.assertNotIn(os.path.join(other, "MEMORY.md"), fs)
+
+    def test_codex_network_and_tools(self):
+        conf = self.codex_settings(bash=False, multi_agent=False, web_cached=True,
+                                   site_allow=True, allowed_sites=["docs.python.org"],
+                                   site_deny=True, denied_sites=["docs.python.org"])
+        self.assertFalse(conf["features"]["shell_tool"])
+        self.assertFalse(conf["features"]["multi_agent"])
+        self.assertEqual(conf["web_search"], "cached")
+        self.assertTrue(conf["features"]["network_proxy"]["enabled"])
+        self.assertEqual(conf["permissions"]["chat"]["network"]["domains"], {"docs.python.org": "deny"})
+        conf = self.codex_settings(site_allow=True)
+        self.assertEqual(conf["permissions"]["chat"]["network"]["domains"], {})
+        self.assertTrue(conf["features"]["network_proxy"]["enabled"])
+        conf = self.codex_settings(site_deny=True, denied_sites=["example.com"])
+        self.assertEqual(conf["permissions"]["chat"]["network"]["domains"], {"*": "allow", "example.com": "deny"})
+        conf = self.codex_settings(network=False, site_allow=True, web=False, web_cached=True)
+        self.assertFalse(conf["features"]["network_proxy"]["enabled"])
+        self.assertFalse(conf["permissions"]["chat"]["network"]["enabled"])
+        self.assertEqual(conf["web_search"], "disabled")
+
+
 class Settings(unittest.TestCase):
     def test_available(self):
         data = users.clean({"engines": {"claude": {"models": {
@@ -297,11 +336,15 @@ class Settings(unittest.TestCase):
         # У каждой сети свои галочки; старый общий формат применяется ко всем.
         data = users.clean({"access": {"claude": {"web": False}}})["access"]
         self.assertEqual((data["claude"]["web"], data["codex"]["web"]), (False, True))
-        self.assertNotIn("bash", data["codex"])
+        self.assertTrue(data["codex"]["bash"])
         old = users.clean({"access": {"network": False}})["access"]
         self.assertEqual((old["claude"]["network"], old["codex"]["network"]), (False, False))
         # Память раньше шла под «Изменением файлов»: без записи старый пользователь её не получает.
         self.assertFalse(users.clean({"access": {"claude": {"write": False}}})["access"]["claude"]["memory"])
+        self.assertFalse(users.clean({"access": {"codex": {"write": False}}})["access"]["codex"]["memory"])
+        self.assertFalse(users.clean({"access": {"codex": {"write": False, "memory": True}}})["access"]["codex"]["memory"])
+        codex = users.clean({"access": {"codex": {"allowed_sites": ["https://Docs.Python.org/3/"]}}})["access"]["codex"]
+        self.assertEqual(codex["allowed_sites"], ["docs.python.org"])
         self.assertFalse(ALL["commands"] or ALL["site_allow"] or ALL["site_deny"])
         conf = users.clean({"access": {"claude": {"allowed_sites": ["https://Docs.Python.org/3/", "*.пример.рф", " "],
                                                   "denied_commands": ["  git   push "]}}})["access"]["claude"]
