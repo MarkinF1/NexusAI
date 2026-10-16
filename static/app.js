@@ -135,20 +135,16 @@ function meter(name, used, limit, text) {
   return row;
 }
 
-// Сводка внизу панели и плашка над полем ввода: диск и расход подписки.
+// Диск внизу панели, лимиты сети — в шапке беседы, плашка над полем ввода.
 function showMe() {
   const blocks = [], warnings = [];
   for (const [engine, windows] of Object.entries(me.limits)) {
-    const block = el("div", "budget");
-    block.dataset.engine = engine;
-    block.append(engineLabel(engine));
     for (const w of Object.keys(WINDOW)) {
       const x = windows[w];
       if (x.limit < 100 && x.used >= x.limit) warnings.push(`Лимит ${NAME[engine]} (${WINDOW[w]}) исчерпан, сброс ${when(x.resets_at)}.`);
-      block.append(meter(WINDOW[w], x.used, x.limit, `${x.used}%` + (x.limit < 100 ? ` из ${x.limit}%` : "")));
     }
-    blocks.push(block);
   }
+  showLimits();
   const disk = me.disk;
   if (disk.quota && disk.used >= disk.quota) warnings.push("Память закончилась: новые файлы загрузить не получится.");
   const diskBlock = el("div", "budget");
@@ -159,6 +155,17 @@ function showMe() {
   $("#quota").replaceChildren(...blocks);
   $("#banner").hidden = !warnings.length;
   $("#banner").textContent = warnings.join(" ");
+}
+
+// Лимиты сети открытой беседы: сначала 5-часовое окно, под ним недельное.
+function showLimits() {
+  const windows = current && me.limits[current.engine];
+  $("#limits").replaceChildren(...(windows ? Object.keys(WINDOW).map((w) => {
+    const x = windows[w];
+    const row = meter(WINDOW[w], x.used, x.limit, `${x.used}%` + (x.limit < 100 ? ` из ${x.limit}%` : ""));
+    row.title = `Сброс ${when(x.resets_at)}`;
+    return row;
+  }) : []));
 }
 
 async function refreshMe() {
@@ -245,8 +252,9 @@ function showHeader() {
   effort.replaceChildren(el("option", "", "размышление: авто"), ...levels.map((l) => el("option", "", l)));
   effort.options[0].value = "";
   effort.value = current.effort;
-  for (const id of ["#model", "#effort", "#files-open", "#delete"]) $(id).hidden = false;
+  for (const id of ["#pick", "#files-open", "#delete"]) $(id).hidden = false;
   effort.hidden = !levels.length;
+  showLimits();
   // Модель беседы из Telegram меняют в боте, пока её не перенесли.
   model.disabled = effort.disabled = !!current.tg && !current.tg.moved;
 }
@@ -389,8 +397,11 @@ function render(ev) {
 
 function setRunning(on) {
   running = on;
-  $("#send").textContent = on ? "Стоп" : "Отправить";
-  $("#send").classList.toggle("stop", on);
+  const send = $("#send");
+  send.querySelector("use").setAttribute("href", on ? "#i-stop" : "#i-send");
+  send.title = on ? "Остановить" : "Отправить";
+  send.setAttribute("aria-label", send.title);
+  send.classList.toggle("stop", on);
   $("#feed > .thinking")?.remove();
   if (on) $("#feed").append(el("div", "thinking"));
 }
