@@ -3,6 +3,8 @@ const $ = (s) => document.querySelector(s);
 const NAME = { claude: "Claude", codex: "Codex" };
 const WINDOW = { five_hour: "5 ч", seven_day: "неделя" };
 let me = null, models = null, current = null, stream = null, count = 0, running = false;
+// Тексты текущего ответа ИИ: кнопка «Копировать» под ответом берёт их все разом.
+let turn = [];
 let attachments = [];
 
 async function api(path, opts = {}) {
@@ -223,6 +225,7 @@ async function openChat(id) {
   side(false);
   $("#feed").replaceChildren();
   count = 0;
+  turn = [];
   data.history.forEach(render);
   count = data.history.length;
   showHeader();
@@ -380,17 +383,59 @@ function scrollDown(force) {
   if (force || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 200) feed.scrollTop = feed.scrollHeight;
 }
 
+// Сайт часто открыт по http из домашней сети, а там navigator.clipboard нет.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = el("textarea");
+    area.value = text;
+    area.style.cssText = "position:fixed;opacity:0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    if (!ok) throw new Error("Браузер не дал скопировать текст");
+  }
+}
+
+function copyBar(text) {
+  const bar = el("div", "msg-actions");
+  const button = el("button", "icon");
+  button.title = "Копировать";
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML = '<svg width="16" height="16"><use href="#i-copy"/></svg>';
+  button.onclick = async () => {
+    try { await copyText(text); } catch (err) { alert(err.message); return; }
+    button.querySelector("use").setAttribute("href", "#i-check");
+    button.title = "Скопировано";
+    setTimeout(() => { button.querySelector("use").setAttribute("href", "#i-copy"); button.title = "Копировать"; }, 1500);
+  };
+  bar.append(button);
+  return bar;
+}
+
+function endTurn() {
+  if (!turn.length) return;
+  const text = turn.join("\n\n");
+  turn = [];
+  $("#feed").insertBefore(copyBar(text), $("#feed > .thinking"));
+}
+
 function render(ev) {
   const feed = $("#feed");
-  let node;
+  let node, after;
   if (ev.kind === "user") {
+    endTurn();
     node = el("div", "msg-user", ev.text);
     if (ev.files?.length) {
       const chips = el("div", "chips");
       ev.files.forEach((name) => chips.append(el("span", "chip file", name)));
       node.append(chips);
     }
+    if (ev.text) after = copyBar(ev.text);
   } else if (ev.kind === "text") {
+    turn.push(ev.text);
     node = el("div", "msg-text");
     node.innerHTML = DOMPurify.sanitize(marked.parse(ev.text));
   } else if (ev.kind === "tool") {
@@ -408,6 +453,8 @@ function render(ev) {
     ev.files.forEach((p) => node.append(fileLink(p)));
   }
   if (node) feed.insertBefore(node, $("#feed > .thinking"));
+  if (after) feed.insertBefore(after, $("#feed > .thinking"));
+  if (ev.kind === "done") endTurn();
 }
 
 function setRunning(on) {

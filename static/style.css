@@ -210,6 +210,10 @@ input, textarea {
 .msg-error { color: var(--error); white-space: pre-wrap; }
 .msg-error::after { left: 5px; top: 6px; width: 10px; height: 10px; background: var(--error); transform: rotate(45deg); }
 .msg-note { color: var(--muted); font-size: 13.5px; }
+/* Под репликой и под ответом ИИ — кнопка «Копировать», прижатая к сообщению */
+#feed > .msg-actions { margin-top: -14px; padding-bottom: 10px; padding-left: 28px; background-position: 9px 14px; }
+.msg-actions .icon { padding: 5px; }
+.msg-actions .icon svg { width: 16px; height: 16px; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
