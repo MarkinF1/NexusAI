@@ -205,13 +205,15 @@ input, textarea {
 }
 .msg-tool:has(+ :not(.msg-tool)) { padding-bottom: 16px !important; }
 .msg-tool b { color: var(--engine); font-weight: 600; }
-.msg-tool::after { left: 5px; top: 4px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--engine); background: var(--sheet); }
+/* * { box-sizing } на псевдоэлементы не действует: рамку считаем в размере явно, центр — на рельсе */
+.msg-tool::after { box-sizing: border-box; left: 3px; top: 4px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--engine); background: var(--sheet); }
 
 .msg-error { color: var(--error); white-space: pre-wrap; }
 .msg-error::after { left: 5px; top: 6px; width: 10px; height: 10px; background: var(--error); transform: rotate(45deg); }
 .msg-note { color: var(--muted); font-size: 13.5px; }
 /* Под репликой и под ответом ИИ — кнопка «Копировать», прижатая к сообщению */
-#feed > .msg-actions { margin-top: -14px; padding-bottom: 10px; padding-left: 28px; background-position: 9px 14px; }
+/* Только y: x рельса задаёт общее правило, на телефоне оно другое */
+#feed > .msg-actions { margin-top: -14px; padding-bottom: 10px; padding-left: 28px; background-position-y: 14px; }
 .msg-actions .icon { padding: 5px; }
 .msg-actions .icon svg { width: 16px; height: 16px; }
 
@@ -377,12 +379,12 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   .msg-user { padding-left: 40px !important; }
   .msg-user::before { left: 26px; }
   .msg-user::after { left: 2px; }
-  .msg-tool::after, .msg-error::after, .thinking::after { left: 3px; }
+  .msg-error::after, .thinking::after { left: 3px; }
+  .msg-tool::after { left: 1px; }
   .empty h2 { font-size: 24px; }
   #composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
   #tg-bar { padding: 6px 16px calc(10px + env(safe-area-inset-bottom)); }
   #tg-bar button { width: 100%; }
-  #send { padding: 8px 12px; }
 
   dialog.wide, #settings:not(.admin) {
     width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0;
