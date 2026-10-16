@@ -41,6 +41,9 @@ cd /opt/NexusAI
 
 Разовый запуск без systemd: `.venv/bin/python app.py`.
 
+Обновление: `./update.sh` — `git pull --ff-only`, новые зависимости, если менялся
+`requirements.txt`, и перезапуск сервиса `systemctl --user restart nexus-web`.
+
 ## Пользователи
 
 «Настройки» в левом нижнем углу есть у всех: там смена пароля и выход. Администратор там же
