@@ -239,10 +239,11 @@ def move_chat(chat: str, user=Depends(current_user)):
 
 
 @app.delete("/api/chats/{chat}")
-def delete_chat(chat: str, user=Depends(current_user)):
+def delete_chat(chat: str, files: bool = False, user=Depends(current_user)):
+    """files — удалить и файлы беседы (из беседы и из библиотеки); иначе они остаются в библиотеке."""
     meta = own_chat(user, chat)
     idle(user, chat)
-    core.delete_chat(user["id"], meta)
+    core.delete_chat(user["id"], meta, files)
     return {}
 
 
@@ -331,8 +332,9 @@ def chat_files_root(user, chat):
 @app.get("/api/chats/{chat}/files")
 def list_files(chat: str, user=Depends(current_user)):
     root = chat_files_root(user, chat)
+    linked = session_files.shelved(core.library(user["id"]))
     return [str(p.relative_to(root)) for folder in ("general", "from_user", "for_user")
-            for p in session_files.queued(root, folder)]
+            for p in session_files.queued(root, folder, linked if folder == "general" else frozenset())]
 
 
 @app.get("/api/chats/{chat}/file")
@@ -340,6 +342,10 @@ def get_file(chat: str, path: str, user=Depends(current_user)):
     root = chat_files_root(user, chat)
     target = (root / path).resolve()  # resolve раскрывает ../ и ссылки наружу
     if not target.is_relative_to(root / "files") or not target.is_file():
+        raise HTTPException(404, "Нет такого файла")
+    info = target.lstat()
+    # Вторая жёсткая ссылка допустима только в библиотеке: иначе это может быть чужой файл.
+    if info.st_nlink > 1 and session_files.inode(info) not in session_files.shelved(core.library(user["id"])):
         raise HTTPException(404, "Нет такого файла")
     return FileResponse(target, filename=target.name)
 

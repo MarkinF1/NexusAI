@@ -244,6 +244,7 @@ dialog {
 dialog::backdrop { background: rgba(20, 28, 24, .4); }
 dialog h3 { margin-top: 4px; }
 dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+#delete-chat .delete-hint { margin: 6px 0 0 24px; }
 #files-list { padding-left: 18px; word-break: break-all; line-height: 2; }
 
 dialog.wide { width: min(1000px, calc(100vw - 32px)); height: min(740px, calc(100vh - 32px)); padding: 0; }

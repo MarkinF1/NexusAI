@@ -130,15 +130,21 @@ def disk(uid):
 
     ponytail: обход на каждый запрос; кэшировать, если папки станут большими.
     """
-    sizes = {}
+    sizes, seen = {}, set()
     for part in ("claude", "codex-home", "chats", "data"):
         total = 0
         for current, _, names in os.walk(os.path.join(core.user_dir(uid), part)):
             for name in names:
                 try:
-                    total += os.lstat(os.path.join(current, name)).st_size
+                    info = os.lstat(os.path.join(current, name))
                 except OSError:
-                    pass
+                    continue
+                # Файл беседы и его ссылка в библиотеке — одно место на диске.
+                if info.st_nlink > 1:
+                    if (info.st_dev, info.st_ino) in seen:
+                        continue
+                    seen.add((info.st_dev, info.st_ino))
+                total += info.st_size
         sizes[part] = total
     files = sizes.pop("data")
     sessions = sum(sizes.values())

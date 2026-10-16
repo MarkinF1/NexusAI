@@ -129,6 +129,17 @@
   </div>
 </dialog>
 
+<dialog id="delete-chat">
+  <h3>Удалить беседу?</h3>
+  <p class="muted">История беседы удалится без возможности восстановления.</p>
+  <label class="check"><input type="checkbox" id="delete-files"> Удалить файлы беседы</label>
+  <p class="muted delete-hint" id="delete-hint"></p>
+  <form method="dialog">
+    <button value="ok" class="danger">Удалить</button>
+    <button value="">Отмена</button>
+  </form>
+</dialog>
+
 <dialog id="files">
   <h3>Файлы беседы</h3>
   <ul id="files-list"></ul>

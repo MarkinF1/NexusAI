@@ -120,6 +120,11 @@ def memory_file(uid):
     return session_files.shared_memory(data_dir(uid))
 
 
+def library(uid):
+    """Все файлы пользователя; в files/general бесед — жёсткие ссылки на них."""
+    return str(session_files.directory(os.path.join(data_dir(uid), session_files.LIBRARY)))
+
+
 def chat_file(uid, chat, ext):
     if not CHAT_ID.fullmatch(chat or ""):
         raise KeyError(chat)
@@ -190,9 +195,19 @@ def history(uid, chat):
     return events
 
 
-def delete_chat(uid, meta):
+def delete_chat(uid, meta, files=True):
+    """files — удалить и файлы беседы из библиотеки. Иначе они остаются там, включая
+    ещё не обработанные вложения и неотданные файлы модели."""
     chat = meta["id"]
-    shutil.rmtree(os.path.join(data_dir(uid), "workspaces", chat), ignore_errors=True)
+    root = os.path.join(data_dir(uid), "workspaces", chat)
+    if os.path.isdir(root):
+        if files:
+            session_files.unshelve(root, library(uid))
+        else:
+            for folder in ("from_user", "for_user"):
+                session_files.archive(root, folder)
+            shelve(uid, chat)
+    shutil.rmtree(root, ignore_errors=True)
     if meta["engine"] == "claude":
         for path in glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl")):
             os.remove(path)
@@ -204,7 +219,7 @@ def delete_chat(uid, meta):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             pass
-    for ext in (".json", ".jsonl"):
+    for ext in (".json", ".jsonl", ".links.json"):
         try:
             os.remove(chat_file(uid, chat, ext))
         except FileNotFoundError:
@@ -416,18 +431,18 @@ def skills():
 
 
 def other_workspaces(uid, chat, access):
-    """Рабочие папки чужих бесед, если пользователю нельзя их видеть."""
+    """Рабочие папки чужих бесед и библиотека с их файлами, если пользователю нельзя их видеть."""
     if access["all_chats"]:
         return []
     root = os.path.join(data_dir(uid), "workspaces")
-    return [os.path.join(root, name) for name in sorted(os.listdir(root)) if name != chat]
+    return [os.path.join(root, name) for name in sorted(os.listdir(root)) if name != chat] + [library(uid)]
 
 
 def protected(uid, cwd, access):
     """Что модели нельзя менять: files/ и инструкции без «Изменения файлов», обе памяти
     без «Изменения памяти». Корень рабочей папки остаётся записываемым: иначе bwrap
     не создаёт там защитные файлы и Bash не стартует."""
-    paths = [] if access["write"] else [os.path.join(cwd, n) for n in ("files", "CLAUDE.md", "AGENTS.md")]
+    paths = [] if access["write"] else [os.path.join(cwd, n) for n in ("files", "CLAUDE.md", "AGENTS.md")] + [library(uid)]
     return paths + ([] if access["memory"] else [memory_file(uid), os.path.join(cwd, "MEMORY.md")])
 
 
@@ -707,9 +722,19 @@ def finish(uid, chat, ok):
     """Файлы после ответа: готовые уходят в general и возвращаются ссылками.
 
     Вложения пользователя переносим только после успешного ответа — при ошибке
-    они остаются в очереди для следующей попытки, как в боте.
+    они остаются в очереди для следующей попытки, как в боте. Всё новое в general
+    (и то, что модель положила туда сама) попадает в библиотеку.
     """
     cwd = workspace(uid, chat)
     if ok:
         session_files.archive(cwd, "from_user")
-    return [os.path.relpath(p, cwd) for p in session_files.archive(cwd, "for_user")]
+    ready = [os.path.relpath(p, cwd) for p in session_files.archive(cwd, "for_user")]
+    shelve(uid, chat)
+    return ready
+
+
+def shelve(uid, chat):
+    """Новое и перезаписанное в files/general беседы — в библиотеку."""
+    path = chat_file(uid, chat, ".links.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return session_files.shelve(workspace(uid, chat), library(uid), path)

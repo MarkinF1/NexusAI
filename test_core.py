@@ -114,6 +114,91 @@ class Run(unittest.TestCase):
         self.assertEqual(core.finish(1, self.meta["id"], True), ["files/general/report.txt"])
 
 
+class Library(unittest.TestCase):
+    def put(self, cwd, folder, name, body=b"x"):
+        with open(os.path.join(cwd, "files", folder, name), "wb") as f:
+            f.write(body)
+
+    def test_shelve_and_delete(self):
+        a, b = core.create_chat(30, "claude", "sonnet"), core.create_chat(30, "claude", "sonnet")
+        cwd_a, cwd_b = core.workspace(30, a["id"]), core.workspace(30, b["id"])
+        lib = core.library(30)
+        self.assertIn("library/", open(core.memory_file(30), encoding="utf-8").read())
+        self.put(cwd_a, "from_user", "doc.txt", b"a" * 200_000)
+        self.put(cwd_a, "for_user", "report.txt")
+        self.assertEqual(core.finish(30, a["id"], True), ["files/general/report.txt"])
+        self.put(cwd_b, "from_user", "doc.txt", b"b")
+        core.finish(30, b["id"], True)
+        names = sorted(os.listdir(lib))
+        self.assertEqual(len(names), 3)  # doc.txt, report.txt и doc_<суффикс>.txt
+        self.assertIn("doc.txt", names)
+        general = os.path.join(cwd_a, "files", "general", "doc.txt")
+        self.assertTrue(os.path.samefile(general, os.path.join(lib, "doc.txt")))
+        # Одно место на диске, хотя имён два.
+        self.assertLess(usage.disk(30)["files"], 300_000)
+        core.finish(30, a["id"], True)  # повторный проход ничего не дублирует
+        self.assertEqual(len(os.listdir(lib)), 3)
+        core.delete_chat(30, a)
+        self.assertEqual(len(os.listdir(lib)), 1)  # остался только файл беседы b
+        self.assertTrue(os.listdir(lib)[0].startswith("doc"))
+
+    def test_overwrite_replaces_library_version(self):
+        chat = core.create_chat(32, "claude", "sonnet")["id"]
+        cwd, lib = core.workspace(32, chat), core.library(32)
+        self.put(cwd, "for_user", "report.txt", b"v1")
+        core.finish(32, chat, True)
+        # Модель перезаписала файл целиком: новый файл под старым именем, связь разорвана.
+        general = os.path.join(cwd, "files", "general", "report.txt")
+        with open(general + ".new", "wb") as f:
+            f.write(b"v2")
+        os.replace(general + ".new", general)
+        core.finish(32, chat, True)
+        self.assertEqual(os.listdir(lib), ["report.txt"])
+        self.assertTrue(os.path.samefile(general, os.path.join(lib, "report.txt")))
+        with open(os.path.join(lib, "report.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"v2")
+        # Удалённый из беседы файл забывается: новый с тем же именем — уже другой файл.
+        os.remove(general)
+        core.finish(32, chat, True)
+        self.put(cwd, "for_user", "report.txt", b"v3")
+        core.finish(32, chat, True)
+        self.assertEqual(len(os.listdir(lib)), 2)
+
+    def test_delete_keeps_files(self):
+        owner = {"id": 33, "is_admin": False}
+        meta = core.create_chat(33, "claude", "sonnet")
+        cwd, lib = core.workspace(33, meta["id"]), core.library(33)
+        self.put(cwd, "for_user", "done.txt")
+        core.finish(33, meta["id"], True)
+        self.put(cwd, "from_user", "pending.txt")  # ответа на него ещё не было
+        app.delete_chat(meta["id"], False, owner)
+        self.assertEqual(sorted(os.listdir(lib)), ["done.txt", "pending.txt"])
+        self.assertFalse(os.path.exists(cwd))
+        self.assertFalse(os.path.exists(core.chat_file(33, meta["id"], ".links.json")))
+        other = core.create_chat(33, "claude", "sonnet")
+        self.put(core.workspace(33, other["id"]), "for_user", "gone.txt")
+        core.finish(33, other["id"], True)
+        app.delete_chat(other["id"], True, owner)
+        self.assertEqual(sorted(os.listdir(lib)), ["done.txt", "pending.txt"])
+
+    def test_hardlinks_on_site(self):
+        owner = {"id": 31, "is_admin": False}
+        chat = core.create_chat(31, "claude", "sonnet")["id"]
+        cwd = core.workspace(31, chat)
+        self.put(cwd, "for_user", "ok.txt")
+        core.finish(31, chat, True)
+        self.assertTrue(app.get_file(chat, "files/general/ok.txt", owner))
+        self.assertEqual(app.list_files(chat, owner), ["files/general/ok.txt"])
+        # Чужая жёсткая ссылка (не из библиотеки) не отдаётся и не показывается.
+        outside = os.path.join(TMP, "secret")
+        with open(outside, "w") as f:
+            f.write("s")
+        os.link(outside, os.path.join(cwd, "files", "general", "secret"))
+        with self.assertRaises(HTTPException):
+            app.get_file(chat, "files/general/secret", owner)
+        self.assertEqual(app.list_files(chat, owner), ["files/general/ok.txt"])
+
+
 class Access(unittest.TestCase):
     def test_paths(self):
         owner, stranger = {"id": 7, "is_admin": False}, {"id": 8, "is_admin": False}
@@ -180,6 +265,9 @@ class Permissions(unittest.TestCase):
         self.assertIn(core.memory_file(3), fs["denyWrite"])
         self.assertEqual(fs["allowWrite"], [])
         self.assertIn(f"Read(/{other}/**)", settings["permissions"]["deny"])
+        # В библиотеке файлы всех бесед: без доступа к ним закрыта и она.
+        self.assertIn(core.library(3), fs["denyRead"])
+        self.assertIn(f"Read(/{core.library(3)}/**)", settings["permissions"]["deny"])
 
     def test_claude_split(self):
         # Память без файлов: Write/Edit есть, но files/ закрыта и для них, и для Bash.
@@ -187,7 +275,8 @@ class Permissions(unittest.TestCase):
         self.assertIn("Edit", args[args.index("--tools") + 1])
         files = os.path.join(self.cwd, "files")
         self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"],
-                         [files, os.path.join(self.cwd, "CLAUDE.md"), os.path.join(self.cwd, "AGENTS.md")])
+                         [files, os.path.join(self.cwd, "CLAUDE.md"), os.path.join(self.cwd, "AGENTS.md"),
+                          core.library(3)])
         self.assertIn(f"Edit(/{files}/**)", settings["permissions"]["deny"])
         _, settings = self.claude(memory=False)
         self.assertIn(f"Edit(/{core.memory_file(3)})", settings["permissions"]["deny"])
@@ -293,6 +382,7 @@ class Permissions(unittest.TestCase):
         self.assertNotIn(core.memory_file(3), fs)  # наследует общий read; file-write ломает CLI
         self.assertNotIn(os.path.join(self.cwd, "MEMORY.md"), fs)
         self.assertEqual(fs[other], "deny")
+        self.assertEqual(fs[core.library(3)], "deny")
         self.assertNotIn(os.path.join(other, "MEMORY.md"), fs)
 
     def test_codex_network_and_tools(self):

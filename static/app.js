@@ -283,10 +283,25 @@ $("#move").onclick = async () => {
   } catch (err) { alert(err.message); }
 };
 
-$("#delete").onclick = async () => {
-  if (!confirm("Удалить беседу вместе с её файлами?")) return;
+// Подтверждение удаления: файлы беседы удаляются только по галочке — из беседы и из библиотеки.
+function deleteHint() {
+  $("#delete-hint").textContent = $("#delete-files").checked
+    ? "Файлы удалятся и из беседы, и из библиотеки."
+    : "Файлы останутся в библиотеке.";
+}
+$("#delete-files").onchange = deleteHint;
+
+$("#delete").onclick = () => {
+  $("#delete-files").checked = false;
+  deleteHint();
+  $("#delete-chat").returnValue = "";
+  $("#delete-chat").showModal();
+};
+
+$("#delete-chat").onclose = async () => {
+  if ($("#delete-chat").returnValue !== "ok") return;
   try {
-    await api(`/api/chats/${current.id}`, { method: "DELETE" });
+    await api(`/api/chats/${current.id}?files=${$("#delete-files").checked}`, { method: "DELETE" });
     location.hash = "";
     location.reload();
   } catch (err) { alert(err.message); }
