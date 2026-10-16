@@ -41,11 +41,46 @@ function engineLabel(engine, text = NAME[engine]) {
   return span;
 }
 
+// Веб-приложение с экрана «Домой» на iOS открывает <a download> прямо в своём окне,
+// где нет кнопки «Назад», и выйти из просмотра можно только перезапуском.
+// Поэтому там файл отдаётся через системное меню «Поделиться».
+const iosApp = navigator.standalone === true;
+
 function fileLink(path) {
-  const a = el("a", "chip file", path.split("/").pop());
+  const name = path.split("/").pop();
+  const a = el("a", "chip file", name);
   a.href = `/api/chats/${current.id}/file?path=${encodeURIComponent(path)}`;
   a.download = "";
+  if (iosApp) a.onclick = (e) => { e.preventDefault(); shareFile(a.href, name); };
   return a;
+}
+
+async function shareFile(url, name) {
+  let file;
+  try {
+    const r = await fetch(url);
+    if (r.status === 401) { showLogin(); return; }
+    if (!r.ok) throw new Error(`Не удалось получить файл: ${r.status} ${r.statusText}`);
+    const blob = await r.blob();
+    file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+    if (!navigator.canShare?.({ files: [file] })) throw new Error("Это устройство не умеет передавать файлы из веб-приложения. Откройте сайт в Safari.");
+  } catch (err) { alert(err.message); return; }
+  try {
+    await navigator.share({ files: [file] });
+  } catch (err) {
+    // Пока файл скачивался, iOS могла «забыть» нажатие: тогда нужен ещё один тап.
+    if (err.name === "NotAllowedError") askShare(file);
+    else if (err.name !== "AbortError") alert(err.message);
+  }
+}
+
+function askShare(file) {
+  const box = $("#file-share");
+  $("#file-share-name").textContent = file.name;
+  $("#file-share-go").onclick = () => {
+    navigator.share({ files: [file] }).catch((err) => { if (err.name !== "AbortError") alert(err.message); });
+  };
+  box.showModal();
 }
 
 // --- Вход ---
