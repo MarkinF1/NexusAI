@@ -45,9 +45,16 @@ def db():
             token TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS tg_groups (
+            chat_id INTEGER PRIMARY KEY,
+            owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE);
     """)
-    if "settings" not in [r["name"] for r in conn.execute("PRAGMA table_info(users)")]:
-        conn.execute("ALTER TABLE users ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'")
+    columns = [r["name"] for r in conn.execute("PRAGMA table_info(users)")]
+    for name, kind in (("settings", "TEXT NOT NULL DEFAULT '{}'"), ("tg_id", "INTEGER"), ("tg_name", "TEXT"),
+                       ("tg_show", "INTEGER NOT NULL DEFAULT 0"), ("tg_notify", "INTEGER NOT NULL DEFAULT 1")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {kind}")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_tg ON users(tg_id)")
     return conn
 
 
@@ -64,7 +71,9 @@ def verify_password(password, stored):
 
 
 def public(row):
-    return {"id": row["id"], "name": row["name"], "is_admin": bool(row["is_admin"])}
+    return {"id": row["id"], "name": row["name"], "is_admin": bool(row["is_admin"]),
+            "tg": row["tg_id"] and {"id": row["tg_id"], "name": row["tg_name"],
+                                    "show": bool(row["tg_show"]), "notify": bool(row["tg_notify"])}}
 
 
 def add(name, password, admin=False):
@@ -127,6 +136,54 @@ def by_token(token):
 def logout(token):
     with db() as conn:
         conn.execute("DELETE FROM logins WHERE token = ?", (token,))
+
+
+# --- Telegram ---
+
+def link_tg(user_id, tg_id, tg_name):
+    """Привязка Telegram-аккаунта; занятый другим пользователем аккаунт — ошибка."""
+    with db() as conn:
+        try:
+            conn.execute("UPDATE users SET tg_id = ?, tg_name = ? WHERE id = ?", (tg_id, tg_name, user_id))
+        except sqlite3.IntegrityError:
+            raise ValueError("Этот Telegram уже привязан к другому пользователю") from None
+
+
+def unlink_tg(user_id):
+    with db() as conn:
+        conn.execute("UPDATE users SET tg_id = NULL, tg_name = NULL WHERE id = ?", (user_id,))
+        conn.execute("DELETE FROM tg_groups WHERE owner = ?", (user_id,))
+
+
+def tg_prefs(user_id, show=None, notify=None):
+    with db() as conn:
+        if show is not None:
+            conn.execute("UPDATE users SET tg_show = ? WHERE id = ?", (int(show), user_id))
+        if notify is not None:
+            conn.execute("UPDATE users SET tg_notify = ? WHERE id = ?", (int(notify), user_id))
+
+
+def get(user_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return public(row) if row else None
+
+
+def by_tg(tg_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,)).fetchone()
+    return public(row) if row else None
+
+
+def group_owner(chat_id):
+    with db() as conn:
+        row = conn.execute("SELECT owner FROM tg_groups WHERE chat_id = ?", (chat_id,)).fetchone()
+    return row["owner"] if row else None
+
+
+def set_group_owner(chat_id, user_id):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO tg_groups VALUES (?, ?)", (chat_id, user_id))
 
 
 # --- Права пользователя ---

@@ -85,6 +85,7 @@ async function start() {
   $("#settings").classList.toggle("admin", me.is_admin);
   models = await api("/api/models");
   showMe();
+  showTg();
   await loadChats();
   const id = location.hash.slice(1);
   if (id) openChat(id);
@@ -173,6 +174,7 @@ async function loadChats() {
   nav.replaceChildren(...list.map((c) => {
     const a = el("a", (c.id === current?.id ? "active" : "") + (c.running ? " running" : ""));
     a.append(logo(c.engine), el("span", "", c.title || "Новая беседа"));
+    if (c.tg && !c.tg.moved) a.append(tgIcon());
     a.title = c.running ? "Отвечает" : "";
     a.dataset.engine = c.engine;
     a.href = "#" + c.id;
@@ -217,7 +219,9 @@ async function openChat(id) {
   data.history.forEach(render);
   count = data.history.length;
   showHeader();
-  $("#composer").hidden = false;
+  const inTg = !!current.tg && !current.tg.moved;
+  $("#composer").hidden = inTg;
+  $("#tg-bar").hidden = !inTg;
   setRunning(data.running);
   if (data.running) follow();
   loadChats();
@@ -243,6 +247,8 @@ function showHeader() {
   effort.value = current.effort;
   for (const id of ["#model", "#effort", "#files-open", "#delete"]) $(id).hidden = false;
   effort.hidden = !levels.length;
+  // Модель беседы из Telegram меняют в боте, пока её не перенесли.
+  model.disabled = effort.disabled = !!current.tg && !current.tg.moved;
 }
 
 async function change(fields) {
@@ -261,6 +267,14 @@ $("#title").onclick = () => {
   if (title !== null) change({ title });
 };
 
+$("#move").onclick = async () => {
+  if (running) return alert("Дождитесь ответа");
+  try {
+    await api(`/api/chats/${current.id}/move`, { method: "POST" });
+    openChat(current.id);
+  } catch (err) { alert(err.message); }
+};
+
 $("#delete").onclick = async () => {
   if (!confirm("Удалить беседу вместе с её файлами?")) return;
   try {
@@ -277,6 +291,64 @@ function side(open) {
 }
 $("#menu").onclick = () => side(true);
 $("#scrim").onclick = () => side(false);
+
+// --- Telegram ---
+
+function tgIcon() {
+  const img = logo("telegram");
+  img.classList.add("tg");
+  img.title = "Беседа из Telegram";
+  return img;
+}
+
+// Блок в «Настройках»: привязка аккаунта и две галочки. Без бота блока нет.
+function showTg() {
+  const box = $("#tg-account");
+  box.hidden = !me.tg_bot && !me.tg;
+  if (box.hidden) return;
+  const head = el("div", "tg-head");
+  head.append(tgIcon(), el("span", "", me.tg ? `Telegram: ${me.tg.name}` : "Telegram не привязан"));
+  const button = el("button", "", me.tg ? "Отвязать" : "Привязать Telegram");
+  button.onclick = async () => {
+    try {
+      if (me.tg) {
+        if (!confirm("Отвязать Telegram? Бот перестанет вам отвечать, группы отключатся.")) return;
+        await api("/api/me/telegram", { method: "DELETE" });
+      } else {
+        // Окно открываем сразу по клику: после await браузер счёл бы его всплывающим.
+        const tab = window.open("about:blank", "_blank");
+        try {
+          const { url } = await api("/api/me/telegram", { method: "POST" });
+          if (tab) { tab.opener = null; tab.location.href = url; } else location.href = url;
+        } catch (err) { tab?.close(); throw err; }
+        alert("В Telegram нажмите «Запустить» у бота, затем закройте это окно.");
+      }
+      await refreshMe();
+      showTg();
+      loadChats();
+    } catch (err) { alert(err.message); }
+  };
+  box.replaceChildren(head);
+  if (me.tg) {
+    const option = (label, key) => {
+      const l = el("label", "check");
+      const input = el("input");
+      input.type = "checkbox";
+      input.checked = me.tg[key];
+      input.onchange = async () => {
+        try {
+          await api("/api/me/telegram", { method: "PATCH", json: { [key]: input.checked } });
+          me.tg[key] = input.checked;
+          loadChats();
+        } catch (err) { input.checked = !input.checked; alert(err.message); }
+      };
+      l.append(input, label);
+      return l;
+    };
+    box.append(option("Показывать беседы из Telegram", "show"), option("Сообщать о готовых ответах", "notify"));
+  }
+  box.append(button);
+}
 
 // --- Лента ---
 
@@ -612,7 +684,7 @@ function showCard() {
     const t = el("table", "info");
     t.append(row("Бесед", stats.chats), row("Сообщений", stats.messages),
       row("Отвечает сейчас", stats.running || "нет"), row("Последняя активность", when(stats.last)),
-      row("Диск", size(stats.disk.total)));
+      row("Диск", size(stats.disk.total)), row("Telegram", user.tg ? user.tg.name : "не привязан"));
     for (const engine of Object.keys(card.catalog)) {
       const x = stats.limits[engine];
       for (const w of Object.keys(WINDOW)) {

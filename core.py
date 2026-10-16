@@ -44,10 +44,13 @@ MAX_IMAGE = 5 * 1024 * 1024  # больше API не принимает
 MAX_IMAGES = 15 * 1024 * 1024  # суммарно на запрос: base64 раздувает payload
 # Claude Code сам подкладывает в контекст email аккаунта подписки — это владелец
 # сервера, а не собеседник; без запрета модель записывала его в общую память.
-SYSTEM_PROMPT = ("Ты отвечаешь пользователю в веб-интерфейсе. Можно использовать markdown: "
-                 "заголовки, списки, таблицы, блоки кода.\n"
-                 "Email из служебного контекста принадлежит владельцу сервера, а не собеседнику: "
-                 "никогда не называй его, не используй и не записывай в память и файлы.")
+# Канал — откуда пришёл вопрос: сайт или Telegram-бот.
+SYSTEM_PROMPT = {"web": "Ты отвечаешь пользователю в веб-интерфейсе. Можно использовать markdown: "
+                        "заголовки, списки, таблицы, блоки кода.\n",
+                 "tg": "Ты отвечаешь пользователю в Telegram. Пиши кратко, без таблиц и без "
+                       "сложной markdown-разметки.\n"}
+OWNER_EMAIL = ("Email из служебного контекста принадлежит владельцу сервера, а не собеседнику: "
+               "никогда не называй его, не используй и не записывай в память и файлы.")
 # WebFetch и WebSearch --restricted вырезает, если не перечислить их здесь.
 FILE_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,NotebookEdit,WebFetch,WebSearch"
 CHAT_ID = re.compile(r"[0-9a-f]{32}")
@@ -256,7 +259,7 @@ def model_env(**extra):
 def file_prompt(cwd, text):
     return (text + f"\n\n[Рабочая папка сессии: {cwd}. Перед ответом обязательно проверь "
             "files/from_user и MEMORY.md. Готовые файлы сохраняй в files/for_user; "
-            "после ответа вложения будут перенесены сайтом в files/general.]")
+            "после ответа вложения будут перенесены в files/general.]")
 
 
 def fit_images(images, limit=MAX_IMAGES):
@@ -437,7 +440,11 @@ def bash_rules(commands):
     return [f"Bash({p})" for p in patterns(commands)]
 
 
-def claude_args(uid, meta, cwd, access):
+def system_prompt(uid, cwd, channel):
+    return SYSTEM_PROMPT[channel] + OWNER_EMAIL + "\n" + session_files.instructions(cwd, memory_file(uid))
+
+
+def claude_args(uid, meta, cwd, access, channel="web"):
     found = glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl"))
     data = data_dir(uid)
     others = other_workspaces(uid, meta["id"], access)
@@ -532,13 +539,13 @@ def claude_args(uid, meta, cwd, access):
         }),
         "--system-prompt-snapshot", "off",
         "--model", meta["model"],
-        "--system-prompt", SYSTEM_PROMPT + "\n" + session_files.instructions(cwd, memory_file(uid)),
+        "--system-prompt", system_prompt(uid, cwd, channel),
         # Транскрипт уже есть — продолжаем, иначе создаём сессию с нашим id.
         "--resume" if found else "--session-id", meta["sid"],
     ] + (["--effort", meta["effort"]] if meta["effort"] else [])
 
 
-def codex_args(uid, meta, cwd, files, access):
+def codex_args(uid, meta, cwd, files, access, channel="web"):
     """Запуск команд у codex не отключается: shell есть всегда, но в песочнице."""
     args = [CODEX_BIN, "exec", "-C", cwd] + (["resume", meta["sid"]] if meta["sid"] else []) + [
         "--json", "--skip-git-repo-check", "-m", meta["model"]]
@@ -553,15 +560,14 @@ def codex_args(uid, meta, cwd, files, access):
                     'permissions.chat.filesystem={":minimal" = "read", %s}' % paths,
                     "permissions.chat.network.enabled=" + ("true" if access["network"] else "false"),
                     'web_search="%s"' % ("live" if access["web"] else "disabled"),
-                    'developer_instructions=' + json.dumps(
-                        SYSTEM_PROMPT + "\n" + session_files.instructions(cwd, memory_file(uid)))):
+                    'developer_instructions=' + json.dumps(system_prompt(uid, cwd, channel))):
         args += ["-c", setting]
     for path in files:
         args += ["-i", path]
     return args + ["-"]  # промпт со stdin: длинный текст в аргумент не влезет
 
 
-async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None):
+async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, channel="web"):
     """Асинхронный генератор событий ответа. Ошибку CLI поднимает RuntimeError.
 
     Кроме событий ленты отдаёт служебные: limits (проценты окон подписки у claude)
@@ -574,7 +580,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None):
     images = fit_images(images)
     files = []
     if meta["engine"] == "claude":
-        args = claude_args(uid, meta, cwd, access)
+        args = claude_args(uid, meta, cwd, access, channel)
         # Без --safe-mode (скиллы) CLAUDE.md и автопамять выключаются только так.
         env = model_env(CLAUDE_CONFIG_DIR=claude_home(uid), CLAUDE_CODE_DISABLE_CLAUDE_MDS="1",
                         CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", NODE_PATH=os.path.join(TOOLS, "node_modules"))
@@ -593,7 +599,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None):
             with open(path, "wb") as f:
                 f.write(data)
             files.append(path)
-        args = codex_args(uid, meta, cwd, files, access)
+        args = codex_args(uid, meta, cwd, files, access, channel)
         env = model_env(CODEX_HOME=codex_home(uid))
         payload = prompt
         parse = codex_events

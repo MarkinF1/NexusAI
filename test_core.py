@@ -34,6 +34,7 @@ os.environ.update(NEXUS_DATA=os.path.join(TMP, "data"), CLAUDE_BIN=FAKE)
 
 import app  # noqa: E402
 import core  # noqa: E402
+import jobs  # noqa: E402
 import usage  # noqa: E402
 import users  # noqa: E402
 
@@ -285,10 +286,10 @@ class Settings(unittest.TestCase):
         self.assertEqual([m["slug"] for m in avail["claude"]], ["sonnet"])  # opus выкл, у haiku нет уровней
         sonnet = avail["claude"][0]
         self.assertEqual((sonnet["efforts"], sonnet["auto"]), (["low", "medium"], False))
-        self.assertIsNone(app.allowed_model(avail, "claude", "sonnet", "low"))
-        self.assertIsNotNone(app.allowed_model(avail, "claude", "sonnet", ""))  # «авто» мог бы выбрать high
-        self.assertIsNotNone(app.allowed_model(avail, "claude", "opus", "low"))
-        self.assertIsNotNone(app.allowed_model(avail, "codex", "x", ""))
+        self.assertIsNone(jobs.allowed_model(avail, "claude", "sonnet", "low"))
+        self.assertIsNotNone(jobs.allowed_model(avail, "claude", "sonnet", ""))  # «авто» мог бы выбрать high
+        self.assertIsNotNone(jobs.allowed_model(avail, "claude", "opus", "low"))
+        self.assertIsNotNone(jobs.allowed_model(avail, "codex", "x", ""))
         with self.assertRaises(ValueError):
             users.clean({"engines": {"claude": {"limit_5h": 150}}})
 
