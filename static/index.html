@@ -156,13 +156,19 @@
     <input id="library-search" type="search" placeholder="Поиск по имени" aria-label="Поиск по имени">
     <span id="library-total" class="muted"></span>
   </div>
-  <ul id="library-list"></ul>
+  <ul id="library-list" class="file-grid"></ul>
 </dialog>
 
 <dialog id="files">
-  <h3>Файлы беседы</h3>
-  <ul id="files-list"></ul>
-  <form method="dialog"><button>Закрыть</button></form>
+  <div class="dialog-bar">
+    <h3>Файлы беседы</h3>
+    <form method="dialog"><button class="icon" aria-label="Закрыть"><svg width="20" height="20"><use href="#i-close"/></svg></button></form>
+  </div>
+  <div class="library-tools">
+    <input id="files-search" type="search" placeholder="Поиск по имени" aria-label="Поиск по имени">
+    <span id="files-total" class="muted"></span>
+  </div>
+  <ul id="files-list" class="file-grid"></ul>
 </dialog>
 
 <dialog id="file-share">

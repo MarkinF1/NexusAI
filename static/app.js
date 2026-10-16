@@ -596,12 +596,8 @@ $("#composer").onsubmit = async (e) => {
 const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|heic|heif|svg)$/i;
 
 // Плитка: превью фото или значок файла с расширением, под ним только имя.
-// Папка (general, for_user…) — во всплывающей подсказке.
-function fileTile(path) {
-  const a = fileLink(path);
-  const name = a.textContent;
-  a.className = "file-tile";
-  a.title = path.replace(/^files\//, "");
+function fillTile(a, name, src) {
+  a.classList.add("file-tile");
   const thumb = el("span", "file-thumb");
   const ext = name.includes(".") ? name.split(".").pop().slice(0, 5).toUpperCase() : "";
   const icon = () => {
@@ -614,22 +610,46 @@ function fileTile(path) {
     img.loading = "lazy";
     img.decoding = "async";
     img.onerror = icon;  // формат, который браузер не показывает, — обычный значок
-    img.src = a.href;
+    img.src = src;
     thumb.append(img);
   } else icon();
   a.replaceChildren(thumb, el("span", "file-name", name));
   return a;
 }
 
-$("#files-open").onclick = async () => {
-  const list = await api(`/api/chats/${current.id}/files`);
-  $("#files-list").replaceChildren(...(list.length ? list.map((p) => {
+// Папка (general, for_user…) — во всплывающей подсказке.
+function fileTile(path) {
+  const a = fileLink(path);
+  a.className = "";
+  a.title = path.replace(/^files\//, "");
+  return fillTile(a, a.textContent, a.href);
+}
+
+const baseName = (path) => path.split("/").pop();
+
+let chatFiles = [];
+
+function showFiles() {
+  const query = $("#files-search").value.trim().toLowerCase();
+  const items = chatFiles.filter((f) => baseName(f.path).toLowerCase().includes(query));
+  const total = chatFiles.reduce((sum, f) => sum + f.size, 0);
+  $("#files-total").textContent = `${chatFiles.length} · ${size(total)}`;
+  $("#files-list").replaceChildren(...(items.length ? items.map((f) => {
     const li = el("li");
-    li.append(fileTile(p));
+    li.append(fileTile(f.path));
     return li;
-  }) : [el("li", "muted", "Пока пусто")]));
+  }) : [el("li", "muted", chatFiles.length ? "Ничего не найдено" : "Пока пусто")]));
+}
+
+$("#files-open").onclick = async () => {
+  try {
+    chatFiles = await api(`/api/chats/${current.id}/files`);
+  } catch (err) { return alert(err.message); }
+  $("#files-search").value = "";
+  showFiles();
   $("#files").showModal();
 };
+$("#files-search").oninput = showFiles;
 
 // --- Библиотека ---
 
@@ -639,45 +659,57 @@ function libraryUrl(path, download) {
   return `/api/library/file?path=${encodeURIComponent(path)}` + (download ? "&download=true" : "");
 }
 
+// Плитка как в «Файлах беседы», под именем — беседы с этим файлом, размер и дата.
+function libraryCard(f) {
+  const li = el("li", "file-card");
+  const name = baseName(f.path);
+  const open = el("a");
+  open.href = libraryUrl(f.path);
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.title = f.path;
+  fillTile(open, name, libraryUrl(f.path));
+  const chats = el("div", "file-chats");
+  if (!f.chats.length) chats.append(el("span", "muted", "без беседы"));
+  f.chats.forEach((c, i) => {
+    const chat = el("a", "", c.title || "Новая беседа");
+    chat.href = "#" + c.id;
+    chat.title = "Открыть беседу";
+    chat.onclick = (e) => {
+      e.preventDefault();
+      $("#library").close();
+      side(false);
+      openChat(c.id);
+    };
+    if (i) chats.append(", ");
+    chats.append(chat);
+  });
+  const sub = el("div", "file-sub muted");
+  const get = el("a", "icon");
+  get.href = libraryUrl(f.path, true);
+  get.download = "";
+  get.title = "Скачать";
+  get.setAttribute("aria-label", "Скачать " + name);
+  get.innerHTML = '<svg width="16" height="16"><use href="#i-download"/></svg>';
+  if (iosApp) {
+    const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), name); };
+    open.onclick = get.onclick = share;
+  }
+  const day = new Date(f.mtime * 1000).toLocaleDateString("ru", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  const info = el("span", "", `${size(f.size)} · ${day}`);
+  info.title = when(f.mtime);
+  sub.append(info, get);
+  li.append(open, chats, sub);
+  return li;
+}
+
 function showLibrary() {
   const query = $("#library-search").value.trim().toLowerCase();
   const items = library.filter((f) => f.path.toLowerCase().includes(query));
   const total = library.reduce((sum, f) => sum + f.size, 0);
   $("#library-total").textContent = `${library.length} · ${size(total)}`;
-  $("#library-list").replaceChildren(...(items.length ? items.map((f) => {
-    const li = el("li");
-    const info = el("div", "library-info");
-    const name = el("a", "library-name", f.path);
-    name.href = libraryUrl(f.path);
-    name.target = "_blank";
-    name.rel = "noopener";
-    name.title = "Открыть";
-    const meta = el("div", "muted", `${size(f.size)} · ${when(f.mtime)}`);
-    for (const c of f.chats) {
-      const chat = el("a", "", c.title || "Новая беседа");
-      chat.href = "#" + c.id;
-      chat.onclick = (e) => {
-        e.preventDefault();
-        $("#library").close();
-        side(false);
-        openChat(c.id);
-      };
-      meta.append(" · ", chat);
-    }
-    info.append(name, meta);
-    const get = el("a", "icon");
-    get.href = libraryUrl(f.path, true);
-    get.download = "";
-    get.title = "Скачать";
-    get.setAttribute("aria-label", "Скачать " + f.path);
-    get.innerHTML = '<svg width="20" height="20"><use href="#i-download"/></svg>';
-    if (iosApp) {
-      const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), f.path.split("/").pop()); };
-      name.onclick = get.onclick = share;
-    }
-    li.append(info, get);
-    return li;
-  }) : [el("li", "muted", library.length ? "Ничего не найдено" : "Пока пусто: сюда попадают вложения и файлы от модели")]));
+  $("#library-list").replaceChildren(...(items.length ? items.map(libraryCard)
+    : [el("li", "muted", library.length ? "Ничего не найдено" : "Пока пусто: сюда попадают вложения и файлы от модели")]));
 }
 
 $("#library-open").onclick = async () => {

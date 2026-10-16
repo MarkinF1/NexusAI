@@ -261,28 +261,33 @@ dialog::backdrop { background: rgba(20, 28, 24, .4); }
 dialog h3 { margin-top: 4px; }
 dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 #delete-chat .delete-hint { margin: 6px 0 0 24px; }
-#library { padding: 0; width: min(760px, calc(100vw - 32px)); max-height: min(740px, calc(100vh - 32px)); }
-#library[open] { display: flex; flex-direction: column; }
+#library, #files { padding: 0; width: min(760px, calc(100vw - 32px)); max-height: min(740px, calc(100vh - 32px)); }
+#files { width: min(520px, calc(100vw - 32px)); }
+#library[open], #files[open] { display: flex; flex-direction: column; }
 .library-tools { display: flex; align-items: center; gap: 12px; padding: 12px 20px 8px; }
 .library-tools input { flex: 1; min-width: 0; }
-#library-list { list-style: none; margin: 0; padding: 0 10px 12px; overflow-y: auto; }
-#library-list li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; }
-#library-list li:hover { background: var(--paper); }
-#library-list li.muted { padding: 16px 10px; }
-.library-info { flex: 1; min-width: 0; }
-.library-name { display: block; color: inherit; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
-.library-name:hover { color: var(--engine); text-decoration: underline; text-underline-offset: 3px; }
-.library-info .muted { font-size: 12.5px; }
-.library-info .muted a { color: var(--muted); }
-.library-info .muted a:hover { color: var(--ink); }
-/* Файлы беседы — плитки в два столбца: превью или значок, под ним имя */
-#files-list {
-  list-style: none; margin: 0; padding: 2px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px; max-height: min(60vh, 560px); overflow-y: auto;
+
+/* Плитки файлов: превью или значок, под ним имя. В беседе — два столбца, в библиотеке — сколько влезет */
+.file-grid {
+  list-style: none; margin: 0; padding: 4px 14px 14px; overflow-y: auto;
+  display: grid; gap: 8px; align-content: start;
 }
-#files-list li.muted { grid-column: 1 / -1; padding: 8px 0; }
+#files-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#library-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.file-grid li.muted { grid-column: 1 / -1; padding: 8px 6px; }
 /* Прокручиваемый список браузер делает фокусируемым и обводит при открытии окна */
-#files-list:focus { outline: none; }
+.file-grid:focus { outline: none; }
+.file-card { display: flex; flex-direction: column; min-width: 0; padding-bottom: 4px; border-radius: 10px; }
+.file-card:hover { background: var(--paper); }
+.file-card .file-tile:hover { background: none; }
+.file-chats, .file-sub { padding: 0 6px; font-size: 12px; line-height: 1.35; text-align: center; }
+.file-chats { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chats .muted { font-size: inherit; }
+.file-chats a { color: var(--engine); text-decoration: none; }
+.file-chats a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.file-sub { display: flex; align-items: center; justify-content: center; gap: 2px; white-space: nowrap; }
+.file-sub .icon { padding: 4px; }
+.file-sub .icon svg { width: 16px; height: 16px; }
 .file-tile { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 10px; color: inherit; text-decoration: none; }
 .file-tile:hover { background: var(--paper); }
 .file-thumb {

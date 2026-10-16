@@ -212,7 +212,8 @@ class Library(unittest.TestCase):
         self.put(cwd, "for_user", "ok.txt")
         core.finish(31, chat, True)
         self.assertTrue(app.get_file(chat, "files/general/ok.txt", owner))
-        self.assertEqual(app.list_files(chat, owner), ["files/general/ok.txt"])
+        ok = os.path.join(cwd, "files", "general", "ok.txt")
+        self.assertEqual(app.list_files(chat, owner), [{"path": "files/general/ok.txt", "size": os.path.getsize(ok)}])
         # Чужая жёсткая ссылка (не из библиотеки) не отдаётся и не показывается.
         outside = os.path.join(TMP, "secret")
         with open(outside, "w") as f:
@@ -220,7 +221,8 @@ class Library(unittest.TestCase):
         os.link(outside, os.path.join(cwd, "files", "general", "secret"))
         with self.assertRaises(HTTPException):
             app.get_file(chat, "files/general/secret", owner)
-        self.assertEqual(app.list_files(chat, owner), ["files/general/ok.txt"])
+        ok = os.path.join(cwd, "files", "general", "ok.txt")
+        self.assertEqual(app.list_files(chat, owner), [{"path": "files/general/ok.txt", "size": os.path.getsize(ok)}])
 
 
 class Access(unittest.TestCase):

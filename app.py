@@ -334,7 +334,8 @@ def chat_files_root(user, chat):
 def list_files(chat: str, user=Depends(current_user)):
     root = chat_files_root(user, chat)
     linked = session_files.shelved(core.library(user["id"]))
-    return [str(p.relative_to(root)) for folder in ("general", "from_user", "for_user")
+    return [{"path": str(p.relative_to(root)), "size": p.lstat().st_size}
+            for folder in ("general", "from_user", "for_user")
             for p in session_files.queued(root, folder, linked if folder == "general" else frozenset())]
 
 
