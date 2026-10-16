@@ -97,6 +97,17 @@ def inode(info):
     return info.st_dev, info.st_ino
 
 
+def contained(root, path):
+    """root/path, если он внутри root; последнее звено не раскрывается, чтобы
+    удалялась сама ссылка, а не файл, на который она указывает. Иначе None."""
+    root = Path(root).resolve()
+    target = root / path
+    if target.name in ("", ".", ".."):
+        return None
+    target = target.parent.resolve() / target.name
+    return target if target.is_relative_to(root) and target != root else None
+
+
 def shelved(library):
     """Номер файла -> путь в библиотеке. Только этим файлам можно иметь вторую ссылку
     в files/general."""

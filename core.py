@@ -10,10 +10,12 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import session_files
 
@@ -740,6 +742,53 @@ def links(uid, chat):
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def delete_chat_file(uid, chat, path):
+    """Убирает файл из беседы. Копия в библиотеке остаётся. False — нет такого файла."""
+    root = Path(workspace(uid, chat))
+    target = session_files.contained(root, path)
+    if target is None or not target.is_relative_to(root / "files"):
+        return False
+    try:
+        info = target.lstat()
+    except OSError:
+        return False
+    # Вторая жёсткая ссылка допустима только на файл библиотеки, как и при скачивании.
+    if not stat.S_ISREG(info.st_mode) or (
+            info.st_nlink > 1 and session_files.inode(info) not in session_files.shelved(library(uid))):
+        return False
+    target.unlink()
+    shelve(uid, chat)  # забыть запись о файле в карте беседы
+    return True
+
+
+def chats_with(uid, path):
+    """Беседы, в files/general которых лежит файл библиотеки path."""
+    return [meta for meta in list_chats(uid) if path in links(uid, meta["id"]).values()]
+
+
+def delete_library_file(uid, path):
+    """Удаляет файл из библиотеки и из files/general всех бесед. False — нет такого файла."""
+    target = session_files.contained(library(uid), path)
+    try:
+        info = target.lstat() if target else None
+    except OSError:
+        info = None
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return False
+    key = session_files.inode(info)
+    for meta in list_chats(uid):
+        cwd = os.path.join(data_dir(uid), "workspaces", meta["id"])
+        if not os.path.isdir(cwd):
+            continue
+        found = [p for p in session_files.queued(cwd, "general", {key}) if session_files.inode(p.lstat()) == key]
+        for p in found:
+            p.unlink()
+        if found:
+            shelve(uid, meta["id"])
+    target.unlink()
+    return True
 
 
 def shelve(uid, chat):

@@ -274,6 +274,15 @@ dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 }
 #files-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #library-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.file-grid > li { position: relative; }
+/* Удаление — красный кружок с белым крестиком в правом верхнем углу превью */
+.file-del {
+  position: absolute; top: 0; right: 0; width: 24px; height: 24px; padding: 0;
+  display: grid; place-items: center; border-radius: 50%; cursor: pointer;
+  background: #d63a2f; color: #fff; border: 2px solid var(--sheet); box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+}
+.file-del:hover { border-color: var(--sheet); filter: brightness(1.15); }
+.file-del svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
 .file-grid li.muted { grid-column: 1 / -1; padding: 8px 6px; }
 /* Прокручиваемый список браузер делает фокусируемым и обводит при открытии окна */
 .file-grid:focus { outline: none; }

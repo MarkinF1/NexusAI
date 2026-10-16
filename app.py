@@ -352,6 +352,16 @@ def get_file(chat: str, path: str, user=Depends(current_user)):
     return FileResponse(target, filename=target.name)
 
 
+@app.delete("/api/chats/{chat}/file")
+def delete_file(chat: str, path: str, user=Depends(current_user)):
+    """Файл уходит из беседы; если он уже в библиотеке, там остаётся."""
+    own_chat(user, chat)
+    idle(user, chat)
+    if not core.delete_chat_file(user["id"], chat, path):
+        raise HTTPException(404, "Нет такого файла")
+    return {}
+
+
 # --- Библиотека ---
 
 @app.get("/api/library")
@@ -384,6 +394,16 @@ def library_file(path: str, download: bool = False, user=Depends(current_user)):
     # HTML и SVG выполнить скрипт от имени сайта.
     return FileResponse(target, filename=target.name, content_disposition_type="inline",
                         headers={"Content-Security-Policy": "sandbox"})
+
+
+@app.delete("/api/library/file")
+def delete_library_file(path: str, user=Depends(current_user)):
+    """Файл удаляется совсем: из библиотеки и из всех бесед, где он лежит."""
+    for meta in core.chats_with(user["id"], path):
+        idle(user, meta["id"])
+    if not core.delete_library_file(user["id"], path):
+        raise HTTPException(404, "Нет такого файла")
+    return {}
 
 
 # --- Пользователи ---

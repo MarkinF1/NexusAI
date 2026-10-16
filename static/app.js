@@ -629,6 +629,17 @@ const baseName = (path) => path.split("/").pop();
 
 let chatFiles = [];
 
+// Красный кружок с белым крестиком в углу плитки.
+function deleteButton(label, onclick) {
+  const button = el("button", "file-del");
+  button.type = "button";
+  button.title = "Удалить";
+  button.setAttribute("aria-label", label);
+  button.innerHTML = '<svg width="12" height="12"><use href="#i-close"/></svg>';
+  button.onclick = onclick;
+  return button;
+}
+
 function showFiles() {
   const query = $("#files-search").value.trim().toLowerCase();
   const items = chatFiles.filter((f) => baseName(f.path).toLowerCase().includes(query));
@@ -636,7 +647,17 @@ function showFiles() {
   $("#files-total").textContent = `${chatFiles.length} · ${size(total)}`;
   $("#files-list").replaceChildren(...(items.length ? items.map((f) => {
     const li = el("li");
-    li.append(fileTile(f.path));
+    const name = baseName(f.path);
+    li.append(fileTile(f.path), deleteButton("Удалить " + name, async () => {
+      // Файлы из general уже в библиотеке: там они остаются.
+      const kept = f.path.startsWith("files/general/");
+      if (!confirm(kept ? `Убрать «${name}» из беседы? В библиотеке файл останется.` : `Удалить «${name}»?`)) return;
+      try {
+        await api(`/api/chats/${current.id}/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
+      } catch (err) { return alert(err.message); }
+      chatFiles = chatFiles.filter((x) => x !== f);
+      showFiles();
+    }));
     return li;
   }) : [el("li", "muted", chatFiles.length ? "Ничего не найдено" : "Пока пусто")]));
 }
@@ -699,7 +720,15 @@ function libraryCard(f) {
   const info = el("span", "", `${size(f.size)} · ${day}`);
   info.title = when(f.mtime);
   sub.append(info, get);
-  li.append(open, chats, sub);
+  li.append(open, chats, sub, deleteButton("Удалить " + name, async () => {
+    const where = f.chats.map((c) => `«${c.title || "Новая беседа"}»`).join(", ");
+    if (!confirm(`Удалить «${name}» насовсем?` + (where ? ` Он пропадёт и из бесед: ${where}.` : ""))) return;
+    try {
+      await api(`/api/library/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
+    } catch (err) { return alert(err.message); }
+    library = library.filter((x) => x !== f);
+    showLibrary();
+  }));
   return li;
 }
 

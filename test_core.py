@@ -225,6 +225,57 @@ class Library(unittest.TestCase):
         self.assertEqual(app.list_files(chat, owner), [{"path": "files/general/ok.txt", "size": os.path.getsize(ok)}])
 
 
+    def test_delete_files(self):
+        owner = {"id": 36, "is_admin": False}
+        a = core.create_chat(36, "claude", "sonnet")["id"]
+        b = core.create_chat(36, "claude", "sonnet")["id"]
+        wa, wb, lib = core.workspace(36, a), core.workspace(36, b), core.library(36)
+        self.put(wa, "for_user", "shared.txt")
+        core.finish(36, a, True)
+        os.link(os.path.join(lib, "shared.txt"), os.path.join(wb, "files", "general", "shared.txt"))
+        core.shelve(36, b)
+        self.put(wa, "from_user", "pending.txt")
+        # Из беседы: файл уходит, в библиотеке и в другой беседе остаётся.
+        app.delete_file(a, "files/general/shared.txt", owner)
+        self.assertFalse(os.path.exists(os.path.join(wa, "files", "general", "shared.txt")))
+        self.assertNotIn("shared.txt", core.links(36, a))
+        self.assertTrue(os.path.exists(os.path.join(lib, "shared.txt")))
+        app.delete_file(a, "files/from_user/pending.txt", owner)
+        self.assertEqual(app.list_files(a, owner), [])
+        # Наружу из files/ не выйти; ссылки и чужие жёсткие ссылки не трогаются.
+        outside = os.path.join(TMP, "keep-36")
+        with open(outside, "w") as f:
+            f.write("k")
+        os.link(outside, os.path.join(wa, "files", "general", "foreign"))
+        os.symlink(outside, os.path.join(wa, "files", "general", "link"))
+        for bad in ("files/general/foreign", "files/../MEMORY.md", "files", "files/general/..", "/etc/passwd",
+                    "files/general/link/x", "../../chats/" + a + ".json"):
+            with self.assertRaises(HTTPException, msg=bad):
+                app.delete_file(a, bad, owner)
+        self.assertTrue(os.path.exists(outside))
+        with self.assertRaises(HTTPException):  # симлинк в списке не показывается и не удаляется
+            app.delete_file(a, "files/general/link", owner)
+        self.assertTrue(os.path.exists(outside))
+        # Пока модель отвечает в беседе с файлом, из библиотеки его не удалить.
+        jobs.jobs[(36, b)] = object()
+        try:
+            with self.assertRaises(HTTPException):
+                app.delete_library_file("shared.txt", owner)
+            with self.assertRaises(HTTPException):
+                app.delete_file(b, "files/general/shared.txt", owner)
+        finally:
+            del jobs.jobs[(36, b)]
+        # Из библиотеки: файл пропадает и из всех бесед.
+        app.delete_library_file("shared.txt", owner)
+        self.assertFalse(os.path.exists(os.path.join(lib, "shared.txt")))
+        self.assertFalse(os.path.exists(os.path.join(wb, "files", "general", "shared.txt")))
+        self.assertEqual(core.links(36, b), {})
+        for bad in ("shared.txt", "../MEMORY.md", "", "..", "/etc/passwd"):
+            with self.assertRaises(HTTPException, msg=bad):
+                app.delete_library_file(bad, owner)
+        with self.assertRaises(HTTPException):
+            app.delete_file(a, "files/general/x", {"id": 37, "is_admin": False})  # чужая беседа
+
 class Access(unittest.TestCase):
     def test_paths(self):
         owner, stranger = {"id": 7, "is_admin": False}, {"id": 8, "is_admin": False}
