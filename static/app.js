@@ -523,6 +523,61 @@ $("#files-open").onclick = async () => {
   $("#files").showModal();
 };
 
+// --- Библиотека ---
+
+let library = [];
+
+function libraryUrl(path, download) {
+  return `/api/library/file?path=${encodeURIComponent(path)}` + (download ? "&download=true" : "");
+}
+
+function showLibrary() {
+  const query = $("#library-search").value.trim().toLowerCase();
+  const items = library.filter((f) => f.path.toLowerCase().includes(query));
+  const total = library.reduce((sum, f) => sum + f.size, 0);
+  $("#library-total").textContent = `${library.length} · ${size(total)}`;
+  $("#library-list").replaceChildren(...(items.length ? items.map((f) => {
+    const li = el("li");
+    const info = el("div", "library-info");
+    const name = el("a", "library-name", f.path);
+    name.href = libraryUrl(f.path);
+    name.target = "_blank";
+    name.rel = "noopener";
+    name.title = "Открыть";
+    const meta = el("div", "muted", `${size(f.size)} · ${when(f.mtime)}`);
+    for (const c of f.chats) {
+      const chat = el("a", "", c.title || "Новая беседа");
+      chat.href = "#" + c.id;
+      chat.onclick = (e) => {
+        e.preventDefault();
+        $("#library").close();
+        side(false);
+        openChat(c.id);
+      };
+      meta.append(" · ", chat);
+    }
+    info.append(name, meta);
+    const get = el("a", "icon");
+    get.href = libraryUrl(f.path, true);
+    get.download = "";
+    get.title = "Скачать";
+    get.setAttribute("aria-label", "Скачать " + f.path);
+    get.innerHTML = '<svg width="20" height="20"><use href="#i-download"/></svg>';
+    li.append(info, get);
+    return li;
+  }) : [el("li", "muted", library.length ? "Ничего не найдено" : "Пока пусто: сюда попадают вложения и файлы от модели")]));
+}
+
+$("#library-open").onclick = async () => {
+  try {
+    library = await api("/api/library");
+  } catch (err) { return alert(err.message); }
+  $("#library-search").value = "";
+  showLibrary();
+  $("#library").showModal();
+};
+$("#library-search").oninput = showLibrary;
+
 // --- Пользователи ---
 
 // Галочки «Доступ» у каждой сети свои (ключи — как users.ACCESS на сервере).

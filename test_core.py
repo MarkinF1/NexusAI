@@ -181,6 +181,30 @@ class Library(unittest.TestCase):
         app.delete_chat(other["id"], True, owner)
         self.assertEqual(sorted(os.listdir(lib)), ["done.txt", "pending.txt"])
 
+    def test_library_api(self):
+        owner = {"id": 34, "is_admin": False}
+        meta = core.create_chat(34, "claude", "sonnet")
+        core.save_chat(34, {**meta, "title": "Отчёты"})
+        self.put(core.workspace(34, meta["id"]), "for_user", "report.html", b"<script>alert(1)</script>")
+        self.put(core.workspace(34, meta["id"]), "for_user", ".env", b"TOKEN=")
+        core.finish(34, meta["id"], True)
+        os.symlink("/etc/passwd", os.path.join(core.library(34), "passwd"))  # подсунутая моделью ссылка
+        items = app.library(owner)
+        self.assertEqual(sorted((i["path"], i["size"]) for i in items), [(".env", 6), ("report.html", 25)])
+        self.assertEqual(items[0]["chats"], [{"id": meta["id"], "title": "Отчёты"}])
+        view = app.library_file("report.html", False, owner)
+
+        async def call_next(_):
+            return view
+        # Общий CSP сайта не перекрывает sandbox ответа.
+        self.assertEqual(asyncio.run(app.security_headers(None, call_next)).headers["content-security-policy"], "sandbox")
+        self.assertTrue(view.headers["content-disposition"].startswith("inline"))
+        self.assertTrue(app.library_file("report.html", True, owner).headers["content-disposition"].startswith("attachment"))
+        for bad in ("passwd", "../MEMORY.md", "../../chats", "/etc/passwd"):
+            with self.assertRaises(HTTPException, msg=bad):
+                app.library_file(bad, False, owner)
+        self.assertEqual(app.library({"id": 35, "is_admin": False}), [])  # чужая библиотека пуста
+
     def test_hardlinks_on_site(self):
         owner = {"id": 31, "is_admin": False}
         chat = core.create_chat(31, "claude", "sonnet")["id"]

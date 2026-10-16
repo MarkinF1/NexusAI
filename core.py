@@ -733,6 +733,15 @@ def finish(uid, chat, ok):
     return ready
 
 
+def links(uid, chat):
+    """Карта беседы: путь в files/general -> путь в библиотеке."""
+    try:
+        with open(chat_file(uid, chat, ".links.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def shelve(uid, chat):
     """Новое и перезаписанное в files/general беседы — в библиотеку."""
     path = chat_file(uid, chat, ".links.json")

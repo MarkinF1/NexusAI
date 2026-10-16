@@ -53,8 +53,9 @@ failures = {}  # имя -> (неудач подряд, время последн
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'")
+    # Свой CSP ответа сильнее: файлы библиотеки отдаются с sandbox.
+    response.headers.setdefault("Content-Security-Policy",
+                                "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'")
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     # Статику браузер сверяет с сервером при каждой загрузке (по ETag — без
@@ -348,6 +349,40 @@ def get_file(chat: str, path: str, user=Depends(current_user)):
     if info.st_nlink > 1 and session_files.inode(info) not in session_files.shelved(core.library(user["id"])):
         raise HTTPException(404, "Нет такого файла")
     return FileResponse(target, filename=target.name)
+
+
+# --- Библиотека ---
+
+@app.get("/api/library")
+def library(user=Depends(current_user)):
+    """Все файлы пользователя, свежие сверху, и беседы, в которых они лежат."""
+    root = Path(core.library(user["id"])).resolve()
+    where = {}
+    for meta in core.list_chats(user["id"]):
+        for path in core.links(user["id"], meta["id"]).values():
+            where.setdefault(path, []).append({"id": meta["id"], "title": meta["title"]})
+    items = []
+    for path in session_files.shelved(root).values():  # только обычные файлы, без ссылок
+        if session_files.TEMP.fullmatch(path.name):
+            continue  # временный файл замены версии
+        info = path.lstat()
+        rel = str(path.relative_to(root))
+        items.append({"path": rel, "size": info.st_size, "mtime": info.st_mtime, "chats": where.get(rel, [])})
+    return sorted(items, key=lambda i: i["mtime"], reverse=True)
+
+
+@app.get("/api/library/file")
+def library_file(path: str, download: bool = False, user=Depends(current_user)):
+    root = Path(core.library(user["id"])).resolve()
+    target = (root / path).resolve()  # resolve раскрывает ../ и ссылки наружу
+    if not target.is_relative_to(root) or not target.is_file():
+        raise HTTPException(404, "Нет такого файла")
+    if download:
+        return FileResponse(target, filename=target.name)
+    # Просмотр в браузере: файлы делают модели и приходят из сети. sandbox не даёт
+    # HTML и SVG выполнить скрипт от имени сайта.
+    return FileResponse(target, filename=target.name, content_disposition_type="inline",
+                        headers={"Content-Security-Policy": "sandbox"})
 
 
 # --- Пользователи ---
