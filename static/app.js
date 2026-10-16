@@ -593,13 +593,39 @@ $("#composer").onsubmit = async (e) => {
 
 // --- Файлы беседы ---
 
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|heic|heif|svg)$/i;
+
+// Плитка: превью фото или значок файла с расширением, под ним только имя.
+// Папка (general, for_user…) — во всплывающей подсказке.
+function fileTile(path) {
+  const a = fileLink(path);
+  const name = a.textContent;
+  a.className = "file-tile";
+  a.title = path.replace(/^files\//, "");
+  const thumb = el("span", "file-thumb");
+  const ext = name.includes(".") ? name.split(".").pop().slice(0, 5).toUpperCase() : "";
+  const icon = () => {
+    thumb.innerHTML = '<svg width="40" height="40"><use href="#i-file"/></svg>';
+    if (ext) thumb.append(el("span", "file-ext", ext));
+  };
+  if (IMAGE.test(name)) {
+    const img = el("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.onerror = icon;  // формат, который браузер не показывает, — обычный значок
+    img.src = a.href;
+    thumb.append(img);
+  } else icon();
+  a.replaceChildren(thumb, el("span", "file-name", name));
+  return a;
+}
+
 $("#files-open").onclick = async () => {
   const list = await api(`/api/chats/${current.id}/files`);
   $("#files-list").replaceChildren(...(list.length ? list.map((p) => {
     const li = el("li");
-    const a = fileLink(p);
-    a.textContent = p.replace(/^files\//, "");
-    li.append(a);
+    li.append(fileTile(p));
     return li;
   }) : [el("li", "muted", "Пока пусто")]));
   $("#files").showModal();
