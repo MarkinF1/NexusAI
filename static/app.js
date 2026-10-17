@@ -266,7 +266,64 @@ async function refreshMe() {
 
 // --- Беседы ---
 
+// Поиск по беседам: вместо списка — найденные беседы с кусочком текста.
+let searchTimer = 0, searchGen = 0;
+
+$("#search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadChats, 250);
+});
+$("#search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.target.value = ""; loadChats(); }
+});
+
+function marked_(text, q) {
+  const span = el("span", "snippet");
+  const low = text.toLowerCase(), needle = q.toLowerCase();
+  let at = 0;
+  for (let i = low.indexOf(needle); i >= 0; i = low.indexOf(needle, at)) {
+    span.append(text.slice(at, i), el("mark", "", text.slice(i, i + needle.length)));
+    at = i + needle.length;
+  }
+  span.append(text.slice(at));
+  return span;
+}
+
+async function showSearch(q) {
+  const gen = ++searchGen;
+  let list;
+  try { list = await api(`/api/search?q=${encodeURIComponent(q)}`); } catch { return; }
+  if (gen !== searchGen) return;
+  const nav = $("#chats");
+  if (!list.length) return nav.replaceChildren(el("div", "muted", "Ничего не нашлось"));
+  nav.replaceChildren(...list.map((c) => {
+    const a = el("a", "found" + (c.id === current?.id ? " active" : ""));
+    a.append(logo(c.engine), marked_(c.title, q));
+    a.lastChild.className = "";
+    if (c.snippet) a.append(marked_(c.snippet, q));
+    a.title = c.hits ? `Совпадений в сообщениях: ${c.hits}` : "Совпадение в названии";
+    a.dataset.engine = c.engine;
+    a.href = "#" + c.id;
+    a.onclick = (e) => { e.preventDefault(); openChat(c.id, q); };
+    return a;
+  }));
+}
+
+// Открытая из поиска беседа: прокрутка к первому совпадению и подсветка.
+function showFound(q) {
+  const needle = q.toLowerCase();
+  const hit = [...$("#feed").querySelectorAll(":scope > .msg-user, :scope > .msg-text, :scope > .msg-transcript")]
+    .find((n) => n.textContent.toLowerCase().includes(needle));
+  if (!hit) return;
+  hit.scrollIntoView({ block: "center" });
+  hit.classList.add("flash");
+  setTimeout(() => hit.classList.remove("flash"), 2000);
+}
+
 async function loadChats() {
+  const q = $("#search").value.trim();
+  if (q.length >= 2) return showSearch(q);
+  searchGen++;
   const list = await api("/api/chats");
   const nav = $("#chats");
   nav.replaceChildren(...list.map((c) => {
@@ -304,7 +361,7 @@ async function newChat(engine) {
 }
 document.addEventListener("click", () => { $("#add-menu").hidden = true; });
 
-async function openChat(id) {
+async function openChat(id, found) {
   pauseVoice();
   stream?.close();
   stream = null;
@@ -317,6 +374,8 @@ async function openChat(id) {
   feedGen++;
   count = 0;
   turn = [];
+  lastAsk = null;
+  stopEdit(true);
   data.history.forEach(render);
   count = data.history.length;
   // Голосовое расшифровывается, а запрос ушёл из другой вкладки или до перезагрузки:
@@ -333,6 +392,7 @@ async function openChat(id) {
   $("#tg-bar").hidden = !inTg;
   setRunning(data.running);
   if (data.running) follow();
+  if (found) showFound(found);
   $("#chat-size").hidden = true;
   compactOffer = false;
   $("#compact-bar").hidden = true;
@@ -358,7 +418,7 @@ function showHeader() {
   effort.replaceChildren(el("option", "", "размышление: авто"), ...levels.map((l) => el("option", "", l)));
   effort.options[0].value = "";
   effort.value = current.effort;
-  for (const id of ["#pick", "#files-open", "#delete"]) $(id).hidden = false;
+  for (const id of ["#pick", "#export", "#files-open", "#delete"]) $(id).hidden = false;
   effort.hidden = !levels.length;
   showLimits();
   // Модель беседы из Telegram меняют в боте, пока её не перенесли.
@@ -525,9 +585,24 @@ function endTurn() {
   $("#feed").insertBefore(copyBar(text), $("#feed > .thinking"));
 }
 
+// Последний запрос беседы: его можно повторить или изменить, пока после него не было сжатия.
+let lastAsk = null;
+
 function render(ev) {
   const feed = $("#feed");
   let node, after;
+  if (ev.kind === "retry") {
+    // Повтор: последний запрос и всё после него уходят из ленты, следом придёт новый.
+    const asked = [...feed.querySelectorAll(":scope > .msg-user")].pop();
+    for (let n = asked; n;) {
+      const next = n.nextElementSibling;
+      if (!n.classList.contains("thinking")) n.remove();
+      n = next;
+    }
+    turn = [];
+    lastAsk = null;
+    return;
+  }
   if (ev.kind === "user") {
     endTurn();
     node = el("div", "msg-user", ev.text);
@@ -537,6 +612,7 @@ function render(ev) {
       node.append(chips);
     }
     if (ev.text) after = copyBar(ev.text);
+    lastAsk = { text: ev.text, bar: after };
   } else if (ev.kind === "text") {
     turn.push(ev.text);
     node = el("div", "msg-text");
@@ -553,6 +629,7 @@ function render(ev) {
     node = el("div", "msg-error" + (limit ? " msg-limit" : ""), limit ? ev.text : "Ошибка: " + ev.text);
   } else if (ev.kind === "compact") {
     endTurn();
+    lastAsk = null;
     node = el("div", "msg-note", "Сжатие беседы…");
   } else if (ev.kind === "compacted") {
     const was = ev.tokens ? `: было ≈${Math.round(ev.tokens / 1000).toLocaleString("ru")} тыс. токенов` : "";
@@ -577,6 +654,67 @@ function render(ev) {
   if (after) feed.insertBefore(after, $("#feed > .thinking"));
   if (ev.kind === "done") endTurn();
 }
+
+function actionButton(icon, title, onclick) {
+  const b = el("button", "icon " + icon);
+  b.type = "button";
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.innerHTML = `<svg width="16" height="16"><use href="#${icon}"/></svg>`;
+  b.onclick = onclick;
+  return b;
+}
+
+// «Изменить» и «Повторить» — у последнего запроса, «Повторить» — и под последним ответом.
+function markLast() {
+  $("#feed").querySelectorAll(".msg-actions .i-edit, .msg-actions .i-retry").forEach((b) => b.remove());
+  const locked = !current || (!!current.tg && !current.tg.moved);
+  if (running || locked || !lastAsk?.bar?.isConnected) return;
+  lastAsk.bar.append(actionButton("i-edit", "Изменить запрос", startEdit),
+    actionButton("i-retry", "Повторить запрос", () => retry()));
+  const answer = [...$("#feed").querySelectorAll(":scope > .msg-actions")].pop();
+  if (answer && answer !== lastAsk.bar) answer.append(actionButton("i-retry", "Ответить заново", () => retry()));
+}
+
+async function retry(text) {
+  const what = text === undefined ? "Ответить заново? Прежний ответ заменится новым, модель его забудет."
+    : null;
+  if (what && !confirm(what)) return false;
+  try {
+    await api(`/api/chats/${current.id}/retry`, { method: "POST", json: text === undefined ? {} : { text } });
+  } catch (err) { alert(err.message); return false; }
+  setRunning(true);
+  follow();
+  scrollDown(true);
+  return true;
+}
+
+// Изменение запроса: текст в поле ввода, отправка заменит последний запрос и ответ.
+let editing = false;
+
+function startEdit() {
+  editing = true;
+  $("#composer").classList.add("editing");
+  $("#edit-bar").hidden = false;
+  const text = $("#text");
+  text.value = lastAsk.text;
+  text.dispatchEvent(new Event("input"));
+  text.focus();
+}
+
+function stopEdit(clear) {
+  if (!editing) return;
+  editing = false;
+  $("#composer").classList.remove("editing");
+  $("#edit-bar").hidden = true;
+  if (clear) {
+    $("#text").value = "";
+    $("#text").style.height = "auto";
+  }
+  updateSend();
+}
+
+$("#edit-cancel").onclick = () => stopEdit(true);
 
 // Кнопка справа: «стоп» во время ответа, самолётик при тексте в поле, иначе микрофон.
 const SEND = {
@@ -603,6 +741,7 @@ function setRunning(on) {
   $("#compact-bar").hidden = on || !compactOffer;
   $("#feed > .thinking")?.remove();
   if (on) $("#feed").append(el("div", "thinking"));
+  markLast();
 }
 
 function follow() {
@@ -675,6 +814,12 @@ $("#composer").onsubmit = async (e) => {
   }
   const text = $("#text").value;
   if (!text.trim()) return;
+  if (editing) {
+    $("#send").disabled = true;
+    if (await retry(text)) stopEdit(true);
+    updateSend();
+    return;
+  }
   $("#send").disabled = true;
   try {
     await sendMessage(text, attachments);
@@ -1085,6 +1230,15 @@ function showFiles() {
     return li;
   }) : [el("li", "muted", chatFiles.length ? "Ничего не найдено" : "Пока пусто")]));
 }
+
+$("#export").onclick = () => {
+  const a = el("a");
+  a.href = `/api/chats/${current.id}/export`;
+  a.download = "";
+  document.body.append(a);
+  a.click();
+  a.remove();
+};
 
 $("#files-open").onclick = async () => {
   try {

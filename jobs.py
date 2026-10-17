@@ -3,8 +3,10 @@ import asyncio
 import collections
 import json
 import logging
+import mimetypes
 import os
 import time
+from pathlib import Path
 
 import core
 import usage
@@ -30,6 +32,7 @@ class Job:
         self.task = None  # ссылка держит задачу от сборщика мусора
         self.stopped = False
         self.raw = False  # служебная команда CLI: уходит как есть, без приписки о папке
+        self.rewind = None  # повтор: флаги отката сессии claude
         self.cond = asyncio.Condition()
 
     def attach(self, proc):
@@ -156,9 +159,47 @@ async def compact(uid, meta, channel="web"):
     return await start(uid, meta, "/compact", data, channel=channel, shown={"kind": "compact", "ts": time.time()})
 
 
-async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown=None):
+async def retry(uid, meta, text=None, channel="web"):
+    """Ответ заново на последний запрос; text — изменённый запрос. Ход убирается и из ленты
+    (отметка retry), и из сессии CLI — модель его не помнит. Нельзя — Refused."""
+    if draining():
+        raise Refused(503, UPDATING)
+    past = core.visible(core.history(uid, meta["id"]))
+    at = core.last_request(past)
+    if at is None:
+        raise Refused(400, "Повторить можно только последний запрос, и не после сжатия беседы")
+    asked = past[at]
+    text = asked["text"] if text is None else text
+    if not text.strip():
+        raise Refused(400, "Напишите, что сделать")
+    data = check(uid, meta)
+    if (uid, meta["id"]) in jobs:
+        raise Refused(409, "Дождитесь ответа или остановите его")
+    # Вложения после удачного ответа уже в files/general — берём оттуда, картинки снова картинками.
+    cwd = Path(core.workspace(uid, meta["id"])) / "files"
+    paths, images = [], []
+    for name in asked.get("files") or []:
+        path = next((cwd / d / name for d in ("from_user", "general") if (cwd / d / name).is_file()), None)
+        if not path:
+            continue
+        paths.append(f"files/{path.parent.name}/{name}")
+        kind = mimetypes.guess_type(name)[0]
+        if kind in IMAGE_TYPES and path.stat().st_size <= core.MAX_IMAGE:
+            images.append((path.read_bytes(), kind))
+    # Название взято из первого запроса — изменённый первый запрос даёт новое.
+    if not any(e.get("kind") == "user" for e in past[:at]) and \
+            meta["title"] == asked["text"].strip().replace("\n", " ")[:60]:
+        meta["title"] = ""
+    rewind = core.rewind(uid, meta, asked["text"])
+    core.append_history(uid, meta["id"], {"kind": "retry", "ts": time.time()})
+    return await start(uid, meta, text, data, list(asked.get("files") or []), images, channel,
+                       paths=paths, rewind=rewind)
+
+
+async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown=None, paths=None, rewind=None):
     """Запуск ответа. saved — имена уже сохранённых в files/from_user вложений.
-    shown — событие ленты вместо реплики пользователя (служебная команда вроде /compact)."""
+    shown — событие ленты вместо реплики пользователя (служебная команда вроде /compact).
+    paths — где вложения на самом деле (повтор: уже в files/general); rewind — откат claude."""
     key = (uid, meta["id"])
     if key in jobs:
         raise Refused(409, "Дождитесь ответа или остановите его")
@@ -166,7 +207,8 @@ async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown
         raise Refused(503, UPDATING)
     jobs[key] = job = Job()  # занимаем беседу до первого await
     save_busy()
-    notes = "\n".join(f"Вложение: files/from_user/{name}" for name in saved)
+    notes = "\n".join(f"Вложение: {path}" for path in
+                      (paths if paths is not None else [f"files/from_user/{name}" for name in saved]))
     prompt = "\n\n".join(p for p in (text, notes) if p)
     if not meta["title"] and not shown:
         meta["title"] = text.strip().replace("\n", " ")[:60]
@@ -174,6 +216,7 @@ async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown
     core.save_chat(uid, meta)
     await push(key, job, shown or {"kind": "user", "text": text, "files": list(saved), "ts": time.time()})
     job.raw = bool(shown)
+    job.rewind = rewind
     job.task = asyncio.create_task(work(uid, meta, prompt, list(images), job, data, channel))
     return job
 
@@ -191,7 +234,8 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
     base = usage.global_snapshot()
     try:
         async for event in core.run(uid, meta, prompt, data["access"][engine], images,
-                                    on_proc=job.attach, channel=channel, raw=job.raw):
+                                    on_proc=job.attach, channel=channel, raw=job.raw,
+                                    rewind=job.rewind):
             if event["kind"] == "limits":
                 points.append(event)
                 limited = limited or usage.check(uid, engine, data, points, started, base)

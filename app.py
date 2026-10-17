@@ -12,6 +12,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -214,6 +215,40 @@ def get_chat(chat: str, user=Depends(current_user)):
     return {"chat": own_chat(user, chat), "history": core.history(user["id"], chat),
             "running": (user["id"], chat) in jobs.jobs,
             "transcribing": jobs.transcribing[(user["id"], chat)] > 0}
+
+
+class Retry(BaseModel):
+    text: str | None = None  # изменённый запрос; нет — тот же
+
+
+@app.post("/api/chats/{chat}/retry")
+async def retry(chat: str, body: Retry, user=Depends(current_user)):
+    """Повторить или изменить последний запрос: прежний ответ заменяется новым."""
+    meta = own_chat(user, chat)
+    idle(user, chat)
+    in_tg(meta)
+    try:
+        await jobs.retry(user["id"], meta, body.text)
+    except jobs.Refused as e:
+        raise HTTPException(e.status, str(e))
+    return {}
+
+
+@app.get("/api/chats/{chat}/export")
+def export(chat: str, user=Depends(current_user)):
+    """Беседа одним Markdown-файлом."""
+    meta = own_chat(user, chat)
+    body = core.export_markdown(meta, core.history(user["id"], chat))
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", meta["title"] or "Беседа").strip()[:80] or "Беседа"
+    return Response(body, media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename=\"chat.md\"; filename*=UTF-8''{quote(name + '.md')}"})
+
+
+@app.get("/api/search")
+def search(q: str = "", user=Depends(current_user)):
+    """Поиск по названиям бесед и тексту сообщений."""
+    q = q.strip()
+    return core.search(user["id"], q) if len(q) >= 2 else []
 
 
 @app.get("/api/chats/{chat}/size")
@@ -552,7 +587,7 @@ def user_card(uid: int, user=Depends(admin_user)):
         raise HTTPException(404, "Нет такого пользователя")
     data = users.settings(uid)
     chats = core.list_chats(uid)
-    messages = sum(1 for c in chats for e in core.history(uid, c["id"]) if e.get("kind") == "user")
+    messages = sum(1 for c in chats for e in core.visible(core.history(uid, c["id"])) if e.get("kind") == "user")
     catalog = core.models()
     return {"user": found, "settings": data,
             "stats": {"chats": len(chats), "messages": messages,

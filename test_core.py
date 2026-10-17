@@ -1,5 +1,6 @@
 """python -m unittest test_core — без сети и без настоящих CLI."""
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -441,6 +442,120 @@ class Update(unittest.TestCase):
 
     def test_update_script(self):
         self.assertEqual(subprocess.run(["bash", "-n", os.path.join(core.HERE, "update.sh")]).returncode, 0)
+
+
+class Retry(unittest.TestCase):
+    def test_visible(self):
+        events = [{"kind": "user", "text": "a"}, {"kind": "text", "text": "1"}, {"kind": "done"},
+                  {"kind": "user", "text": "b"}, {"kind": "text", "text": "2"}, {"kind": "done"},
+                  {"kind": "retry"}, {"kind": "user", "text": "c"}, {"kind": "done"}]
+        shown = core.visible(events)
+        self.assertEqual([e.get("text") for e in shown if e["kind"] == "user"], ["a", "c"])
+        self.assertEqual(core.last_request(shown), 3)
+        self.assertIsNone(core.last_request(shown + [{"kind": "compact"}, {"kind": "compacted"}]))
+        self.assertIsNone(core.last_request([]))
+
+    def transcript(self, uid, sid, records):
+        project = os.path.join(core.claude_home(uid), "projects", "-tmp-r")
+        os.makedirs(project, exist_ok=True)
+        with open(os.path.join(project, sid + ".jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in records))
+
+    def test_claude_rewind(self):
+        meta = core.create_chat(46, "claude", "sonnet")
+        prompt = lambda u, parent, text: {"type": "user", "uuid": u, "parentUuid": parent,  # noqa: E731
+                                          "message": {"content": [{"type": "text", "text": text}]}}
+        self.transcript(46, meta["sid"], [
+            {"type": "attachment", "uuid": "a0", "parentUuid": None},
+            prompt("u1", "a0", "первый\n\n[Рабочая папка]"),
+            {"type": "assistant", "uuid": "x1", "parentUuid": "u1"},
+            {"type": "user", "uuid": "t1", "parentUuid": "x1", "message": {"content": [{"type": "tool_result"}]}},
+            prompt("u2", "t1", "второй\n\n[Рабочая папка]"),
+            {"type": "assistant", "uuid": "x2", "parentUuid": "u2"}])
+        self.assertEqual(core.rewind(46, meta, "второй"), {"at": "t1", "drop": "u2"})
+        self.assertIsNone(core.rewind(46, meta, "другой"))  # ход не дошёл до сессии — откатывать нечего
+        args = core.claude_args(46, meta, core.workspace(46, meta["id"]), ALL, rewind={"at": "t1", "drop": "u2"})
+        self.assertEqual(args[-4:], ["--resume-session-at", "t1", "--resume-drops-turn", "u2"])
+        # Повтор первого хода — сессия с начала.
+        sid = meta["sid"]
+        self.transcript(46, sid, [prompt("u1", None, "первый")])
+        self.assertIsNone(core.rewind(46, meta, "первый"))
+        self.assertNotEqual(meta["sid"], sid)
+        self.assertEqual(core.load_chat(46, meta["id"])["sid"], meta["sid"])
+
+    def test_codex_rewind(self):
+        import sqlite3
+        meta = core.save_chat(47, {**core.create_chat(47, "codex", "gpt"), "sid": "0000-sid"})
+        folder = os.path.join(core.codex_home(47), "sessions", "2026", "01", "01")
+        os.makedirs(folder)
+        path = os.path.join(folder, "rollout-2026-01-01-0000-sid.jsonl")
+        lines = [{"type": "session_meta", "payload": {}},
+                 {"type": "event_msg", "payload": {"type": "task_started"}},
+                 {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                       "content": [{"type": "input_text", "text": "раз\n\n[папка]"}]}},
+                 {"type": "event_msg", "payload": {"type": "task_complete"}},
+                 {"type": "event_msg", "payload": {"type": "task_started"}},
+                 {"type": "event_msg", "payload": {"type": "user_message", "message": "два\n\n[папка]"}},
+                 {"type": "event_msg", "payload": {"type": "task_complete"}}]
+        with open(path, "w") as f:
+            f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in lines))
+        db = os.path.join(core.codex_home(47), "thread_history_1.sqlite")
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.execute("CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT)")
+            conn.executemany("INSERT INTO thread_turns VALUES (?, ?)", [("0000-sid", "t1"), ("other", "t9")])
+        self.assertIsNone(core.rewind(47, meta, "три"))  # последний ход — не этот запрос
+        self.assertEqual(len(open(path).readlines()), 7)
+        self.assertIsNone(core.rewind(47, meta, "два"))
+        self.assertEqual(len(open(path).readlines()), 4)  # остался первый ход
+        with contextlib.closing(sqlite3.connect(db)) as conn:  # проекцию истории codex соберёт заново из журнала
+            self.assertEqual(list(conn.execute("SELECT thread_id FROM thread_turns")), [("other",)])
+        self.assertIsNone(core.rewind(47, meta, "раз"))
+        self.assertEqual(meta["sid"], "")  # первый ход — новая сессия
+
+    def test_retry_flow(self):
+        owner = {"id": 48, "is_admin": False}
+        meta = core.create_chat(48, "claude", "sonnet")
+        cwd = core.workspace(48, meta["id"])
+        with open(os.path.join(cwd, "files", "from_user", "pic.png"), "wb") as f:
+            f.write(b"\x89PNG")
+
+        async def go():
+            job = await jobs.start(48, meta, "первый вопрос", users.settings(48), ["pic.png"])
+            await job.task
+            with self.assertRaises(HTTPException):  # пока идёт ответ — нельзя
+                jobs.jobs[(48, meta["id"])] = job
+                await app.retry(meta["id"], app.Retry(), owner)
+            del jobs.jobs[(48, meta["id"])]
+            with unittest.mock.patch("jobs.start", wraps=jobs.start) as start:
+                await app.retry(meta["id"], app.Retry(text="изменённый вопрос"), owner)
+                await jobs.jobs[(48, meta["id"])].task
+            return start.await_args
+
+        call = asyncio.run(go())
+        self.assertEqual(call.kwargs["paths"], ["files/general/pic.png"])  # вложение уже в general
+        self.assertEqual(len(call.args[5]), 1)  # и снова уходит картинкой
+        raw = core.history(48, meta["id"])
+        self.assertIn({"kind": "retry"}, [{"kind": e["kind"]} for e in raw])
+        shown = core.visible(raw)
+        self.assertEqual([e["text"] for e in shown if e["kind"] == "user"], ["изменённый вопрос"])
+        self.assertEqual(shown[-1]["kind"], "done")
+        md = app.export(meta["id"], owner).body.decode()
+        self.assertTrue(md.startswith("# изменённый вопрос\n"))  # название — из нового запроса
+        self.assertIn("### Вы", md)
+        self.assertIn("изменённый вопрос", md)
+        self.assertNotIn("первый вопрос", md)
+        self.assertIn("### Claude", md)
+        self.assertIn("Привет", md)
+        self.assertIn("filename*=UTF-8''", app.export(meta["id"], owner).headers["content-disposition"])
+        found = app.search("ИЗМЕНЁН", owner)
+        self.assertEqual([(c["id"], c["hits"]) for c in found], [(meta["id"], 1)])
+        self.assertIn("изменённый", found[0]["snippet"])
+        self.assertEqual(app.search("первый вопрос", owner), [])  # заменённый ход не ищется
+        self.assertEqual(app.search("и", owner), [])  # слишком коротко
+        # После сжатия повторять нечего.
+        core.append_history(48, meta["id"], {"kind": "compact"})
+        with self.assertRaises(HTTPException):
+            asyncio.run(app.retry(meta["id"], app.Retry(), owner))
 
 
 class Access(unittest.TestCase):

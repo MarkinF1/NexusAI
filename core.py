@@ -4,12 +4,14 @@
 """
 import asyncio
 import base64
+import contextlib
 import glob
 import json
 import os
 import re
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import time
@@ -195,6 +197,31 @@ def history(uid, chat):
     except OSError:
         pass
     return events
+
+
+def visible(events):
+    """Журнал без заменённых ходов: отметка retry убирает всё с последней реплики
+    пользователя. Журнал только дописывается — номера событий у вкладок не съезжают."""
+    shown = []
+    for event in events:
+        if event.get("kind") == "retry":
+            asked = max((i for i, e in enumerate(shown) if e.get("kind") == "user"), default=None)
+            if asked is not None:
+                del shown[asked:]
+        else:
+            shown.append(event)
+    return shown
+
+
+def last_request(events):
+    """Номер последней реплики пользователя в visible(), если после неё не было сжатия."""
+    for i in range(len(events) - 1, -1, -1):
+        kind = events[i].get("kind")
+        if kind == "user":
+            return i
+        if kind in ("compact", "compacted"):
+            return None
+    return None
 
 
 def voice_dir(uid, chat):
@@ -529,7 +556,105 @@ def system_prompt(uid, cwd, channel):
     return SYSTEM_PROMPT[channel] + OWNER_EMAIL + "\n" + session_files.instructions(cwd, memory_file(uid))
 
 
-def claude_args(uid, meta, cwd, access, channel="web"):
+# --- Повтор последнего запроса: откат сессии CLI на ход назад ---
+
+def _prompt_text(rec):
+    """Текст реплики пользователя в транскрипте claude; не реплика (ответ инструмента,
+    служебная вставка) — None."""
+    if rec.get("type") != "user" or rec.get("isMeta") or rec.get("isSidechain") or rec.get("isCompactSummary"):
+        return None
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and not any(c.get("type") == "tool_result" for c in content):
+        return "\n".join(c.get("text", "") for c in content if c.get("type") == "text")
+    return None
+
+
+def _fresh_session(uid, meta):
+    meta["sid"] = str(uuid.uuid4()) if meta["engine"] == "claude" else ""
+    save_chat(uid, meta)
+
+
+def rewind(uid, meta, text):
+    """Убрать из сессии CLI последний ход, если это запрос text. Для claude — флаги
+    следующего запуска (--resume-session-at), codex переписываем на месте. Хода
+    в сессии нет (CLI упал до записи) — ничего не делаем, None."""
+    if not meta["sid"]:
+        return None
+    if meta["engine"] == "claude":
+        found = glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl"))
+        last = None
+        if found:
+            with open(found[0], encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if _prompt_text(rec) is not None:
+                        last = rec
+        if not last or not _prompt_text(last).startswith(text):
+            return None
+        if not last.get("parentUuid"):
+            _fresh_session(uid, meta)  # это был первый ход: начинаем сессию заново
+            return None
+        # drops-turn: CLI откажется, если в отрезаемом куске окажется не только этот ход.
+        return {"at": last["parentUuid"], "drop": last["uuid"]}
+    found = glob.glob(os.path.join(codex_home(uid), "sessions", "*", "*", "*", f"rollout-*-{meta['sid']}.jsonl"))
+    if not found:
+        return None
+    with open(found[0], "rb") as f:
+        lines = f.readlines()
+    starts = [i for i, line in enumerate(lines) if b'"task_started"' in line and _codex_kind(line) == "task_started"]
+    if not starts or not any(_codex_user(line, text) for line in lines[starts[-1]:]):
+        return None
+    if len(starts) == 1:
+        _fresh_session(uid, meta)
+        return None
+    # ponytail: в codex exec отката нет, а thread/rollback app-server устарел и не берёт
+    # такие беседы. Журнал сессии — источник истории, его база thread_history — только
+    # проекция: обрезаем журнал по началу хода и сбрасываем проекцию беседы.
+    tmp = found[0] + ".tmp"
+    with open(tmp, "wb") as f:
+        f.writelines(lines[:starts[-1]])
+    os.replace(tmp, found[0])
+    for db in glob.glob(os.path.join(codex_home(uid), "thread_history_*.sqlite")):
+        try:
+            with contextlib.closing(sqlite3.connect(db, timeout=5)) as conn, conn:
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in ("thread_turns", "thread_items", "thread_history_projection_state",
+                              "thread_realtime_items"):
+                    if table in tables:
+                        conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (meta["sid"],))
+        except sqlite3.Error:
+            pass
+    return None
+
+
+def _codex_kind(line):
+    try:
+        return (json.loads(line).get("payload") or {}).get("type")
+    except ValueError:
+        return None
+
+
+def _codex_user(line, text):
+    """Строка журнала codex — запрос пользователя, начинающийся с text."""
+    if b'"user' not in line:
+        return False
+    try:
+        payload = json.loads(line).get("payload") or {}
+    except ValueError:
+        return False
+    if payload.get("type") == "user_message":
+        return (payload.get("message") or "").startswith(text)
+    if payload.get("type") == "message" and payload.get("role") == "user":
+        return any((c.get("text") or "").startswith(text) for c in payload.get("content") or [])
+    return False
+
+
+def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
     found = glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl"))
     data = data_dir(uid)
     others = other_workspaces(uid, meta["id"], access)
@@ -627,7 +752,9 @@ def claude_args(uid, meta, cwd, access, channel="web"):
         "--system-prompt", system_prompt(uid, cwd, channel),
         # Транскрипт уже есть — продолжаем, иначе создаём сессию с нашим id.
         "--resume" if found else "--session-id", meta["sid"],
-    ] + (["--effort", meta["effort"]] if meta["effort"] else [])
+    ] + (["--effort", meta["effort"]] if meta["effort"] else []) + (
+        # Повтор: продолжаем с хода перед отменённым — новая ветка остаётся в сессии.
+        ["--resume-session-at", rewind["at"], "--resume-drops-turn", rewind["drop"]] if rewind and found else [])
 
 
 def codex_args(uid, meta, cwd, files, access, channel="web"):
@@ -678,7 +805,8 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
     return args + ["-"]  # промпт со stdin: длинный текст в аргумент не влезет
 
 
-async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, channel="web", raw=False):
+async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, channel="web", raw=False,
+              rewind=None):
     """Асинхронный генератор событий ответа. Ошибку CLI поднимает RuntimeError.
 
     Кроме событий ленты отдаёт служебные: limits (проценты окон подписки у claude)
@@ -686,13 +814,14 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
     meta меняется на месте: codex выдаёт id сессии только в первом ответе.
     raw — служебная команда (/compact): без приписки о папке, иначе CLI примет её за аргументы.
     on_proc получает процесс, чтобы его можно было остановить через stop().
+    rewind — флаги отката claude от rewind(): ответ заново на последний запрос.
     """
     cwd = workspace(uid, meta["id"])
     prompt = text if raw else file_prompt(cwd, text)
     images = fit_images(images)
     files = []
     if meta["engine"] == "claude":
-        args = claude_args(uid, meta, cwd, access, channel)
+        args = claude_args(uid, meta, cwd, access, channel, rewind)
         # Без --safe-mode (скиллы) CLAUDE.md и автопамять выключаются только так.
         env = model_env(CLAUDE_CONFIG_DIR=claude_home(uid), CLAUDE_CODE_DISABLE_CLAUDE_MDS="1",
                         CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", NODE_PATH=os.path.join(TOOLS, "node_modules"))
@@ -779,6 +908,68 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
     raw_err = (await stderr).decode(errors="replace").strip()
     if proc.returncode != 0 or fatal or not said:
         raise RuntimeError(err or raw_err or f"{meta['engine']} завершился с ошибкой")
+
+
+def export_markdown(meta, events):
+    """Беседа одним Markdown-файлом: реплики, ответы, инструменты и файлы."""
+    name = {"claude": "Claude", "codex": "Codex"}.get(meta["engine"], meta["engine"])
+    stamp = lambda ts: time.strftime("%d.%m.%Y %H:%M", time.localtime(ts))  # noqa: E731
+    out = [f"# {meta['title'] or 'Новая беседа'}", "",
+           f"{name} · {meta['model']}" + (f" · {meta['effort']}" if meta.get("effort") else "")
+           + f" · создана {stamp(meta['created'])}", ""]
+    answering = False
+    for e in visible(events):
+        kind = e.get("kind")
+        if kind == "user":
+            out += ["---", "", "### Вы" + (f" · {stamp(e['ts'])}" if e.get("ts") else ""), "", e.get("text", ""), ""]
+            if e.get("files"):
+                out += ["Вложения: " + ", ".join(e["files"]), ""]
+            answering = False
+        elif kind in ("text", "tool", "error", "warning", "stopped", "compacted") and not answering:
+            out += [f"### {name}", ""]
+            answering = True
+        if kind == "text":
+            out += [e["text"], ""]
+        elif kind == "tool":
+            out += [f"> `{e.get('name', '')}` {e.get('input', '')}".rstrip(), ""]
+        elif kind in ("error", "warning"):
+            out += [f"> **{'Ошибка' if kind == 'error' else 'Внимание'}:** {e.get('text', '')}", ""]
+        elif kind == "stopped":
+            out += ["> Остановлено", ""]
+        elif kind == "compacted":
+            out += ["> Беседа сжата", ""]
+        elif kind == "done" and e.get("files"):
+            out += ["Файлы: " + ", ".join(e["files"]), ""]
+            answering = False
+    return "\n".join(out).rstrip() + "\n"
+
+
+def search(uid, query, limit=50):
+    """Беседы, где query есть в названии или в тексте реплик и ответов.
+    ponytail: читаем журналы целиком на каждый поиск — для личных бесед быстро."""
+    needle = query.casefold()
+    found = []
+    for meta in list_chats(uid):
+        title = meta["title"] or "Новая беседа"
+        hits, snippet = 0, ""
+        for e in visible(history(uid, meta["id"])):
+            if e.get("kind") not in ("user", "text", "transcript"):
+                continue
+            text = e.get("text") or ""
+            at = text.casefold().find(needle)
+            if at < 0:
+                continue
+            hits += text.casefold().count(needle)
+            if not snippet:
+                start = max(0, at - 40)
+                snippet = (("…" if start else "") + text[start:at + len(needle) + 80]).replace("\n", " ")
+        in_title = needle in title.casefold()
+        if hits or in_title:
+            found.append({"id": meta["id"], "title": title, "engine": meta["engine"], "hits": hits,
+                          "snippet": snippet, "updated": meta["updated"]})
+        if len(found) >= limit:
+            break
+    return found
 
 
 def stop(proc):
