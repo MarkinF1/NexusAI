@@ -1,7 +1,4 @@
-"""Ядро: папки пользователей, беседы и запуск claude/codex со стримингом событий.
-
-Запуск CLI и песочница перенесены из бота NexusAITg (bot.py) без Telegram-части.
-"""
+"""Ядро: папки пользователей, беседы и запуск claude/codex со стримингом событий."""
 import asyncio
 import base64
 import contextlib
@@ -83,7 +80,7 @@ def link_creds(link, host):
         # claude обновляет токен атомарной заменой файла, и симлинк становится
         # копией. Refresh-токен одноразовый: старый у хоста уже не работает,
         # поэтому возвращаем хосту копию — но только если она свежее. Иначе
-        # протухшая копия затрёт /login и токен бота NexusAITg.
+        # протухшая копия затрёт свежий вход хоста и токен других программ.
         if not os.path.exists(host) or creds_freshness(link) >= creds_freshness(host):
             shutil.copy2(link, host)
         os.remove(link)
@@ -902,7 +899,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
         for path in files:
             os.remove(path)
         # Обновлённый токен сразу отдаём хосту, а не при следующем запросе:
-        # бот NexusAITg и остальные пользователи читают его оттуда.
+        # остальные пользователи и программы хоста читают его оттуда.
         if meta["engine"] == "claude":
             claude_home(uid)
     raw_err = (await stderr).decode(errors="replace").strip()
@@ -984,7 +981,7 @@ def finish(uid, chat, ok):
     """Файлы после ответа: готовые уходят в general и возвращаются ссылками.
 
     Вложения пользователя переносим только после успешного ответа — при ошибке
-    они остаются в очереди для следующей попытки, как в боте. Всё новое в general
+    они остаются в очереди для следующей попытки. Всё новое в general
     (и то, что модель положила туда сама) попадает в библиотеку.
     """
     cwd = workspace(uid, chat)
