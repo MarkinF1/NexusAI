@@ -97,32 +97,61 @@ def spent(mine, engine):
     return result
 
 
+def subscription(snapshot, engine, window):
+    """(сколько процентов окна подписки занято, сброс); окно уже сбросилось — (0, 0)."""
+    record = (snapshot.get(engine) or {}).get(window)
+    if record and record["resets_at"] > time.time():
+        return record["percent"], record["resets_at"]
+    return 0, 0
+
+
+def windows(mine, snapshot, engine, conf):
+    """По окнам: свой расход (used), лимит, занятость подписки и share — сколько процентов
+    своей части уже нет. Часть пропадает и от своих запросов, и от чужих: если подписки
+    осталось меньше, чем пользователю по лимиту, доступен только остаток подписки.
+    Двое по 60%: первый потратил 60% — у него 100%, у второго осталось 40 из 60 — 33.33%."""
+    result = {}
+    for window, own in spent(mine, engine).items():
+        limit = conf[LIMIT_KEYS[window]]
+        total, resets = subscription(snapshot, engine, window)
+        left = max(0.0, min(limit - own["used"], 100 - total))
+        share = round(100 - left / limit * 100, 2) if limit else 100
+        result[window] = {"used": own["used"], "limit": limit, "subscription": total, "share": share,
+                          "resets_at": own["resets_at"] or resets}
+    return result
+
+
 def summary(uid, data):
     """Расход и лимиты пользователя по всем сетям, токены за всё время."""
-    mine = _load(user_path(uid))
+    mine, snapshot = _load(user_path(uid)), _load(global_path())
     result = {}
     for engine in core.ENGINES:
-        conf = users.engine_conf(data, engine)
-        result[engine] = {w: {**r, "limit": conf[LIMIT_KEYS[w]]} for w, r in spent(mine, engine).items()}
+        result[engine] = windows(mine, snapshot, engine, users.engine_conf(data, engine))
         result[engine]["tokens"] = (mine.get(engine) or {}).get("tokens", {"in": 0, "out": 0})
     return result
 
 
-def over(windows):
-    """Текст «лимит исчерпан» по первому превышенному окну или None."""
+def over(state):
+    """Текст «лимит исчерпан» по первому окну, где своей части не осталось, или None."""
     for window in core.WINDOWS:
-        w = windows[window]
-        if w["limit"] < 100 and w["used"] >= w["limit"]:
-            reset = time.strftime("%d.%m %H:%M", time.localtime(w["resets_at"])) if w["resets_at"] else "—"
+        w = state[window]
+        if w["share"] < 100:
+            continue
+        reset = time.strftime("%d.%m %H:%M", time.localtime(w["resets_at"])) if w["resets_at"] else "—"
+        if w["used"] >= w["limit"]:
             return f"Лимит {NAMES[window]} исчерпан ({w['used']:g}% из {w['limit']}%), сброс {reset}"
+        return (f"Лимит {NAMES[window]} исчерпан: подписка занята на {w['subscription']:g}%, "
+                f"вашей части не осталось, сброс {reset}")
     return None
 
 
 def check(uid, engine, data, points=(), started=0):
     """Превышен ли лимит; с points — с учётом ещё не списанного текущего запуска."""
-    mine = tally(uid, engine, list(points), started)[0] if points else _load(user_path(uid))
-    conf = users.engine_conf(data, engine)
-    return over({w: {**r, "limit": conf[LIMIT_KEYS[w]]} for w, r in spent(mine, engine).items()})
+    if points:
+        mine, snapshot = tally(uid, engine, list(points), started)
+    else:
+        mine, snapshot = _load(user_path(uid)), _load(global_path())
+    return over(windows(mine, snapshot, engine, users.engine_conf(data, engine)))
 
 
 def disk(uid):

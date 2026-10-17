@@ -624,6 +624,31 @@ class Accounting(unittest.TestCase):
         self.assertEqual(usage.summary(20, data)["claude"]["five_hour"]["used"], 0)
         self.assertEqual(usage.summary(20, data)["claude"]["tokens"], {"in": 100, "out": 10})
 
+    def test_share(self):
+        """Лимит — часть подписки; чужой расход съедает её, если подписки осталось меньше."""
+        data = users.clean({"engines": {"codex": {"limit_5h": 60}}})
+        free = users.clean({})
+        usage.charge(24, "codex", [self.point(0), self.point(60)], time.time())
+        first, second = usage.summary(24, data)["codex"], usage.summary(25, data)["codex"]
+        self.assertEqual((first["five_hour"]["share"], first["five_hour"]["used"]), (100, 60))
+        self.assertEqual((second["five_hour"]["share"], second["five_hour"]["used"]), (33.33, 0))
+        self.assertEqual(second["five_hour"]["subscription"], 60)
+        self.assertEqual(second["five_hour"]["resets_at"], self.R5)  # сброс — от подписки, своих трат нет
+        self.assertEqual(usage.summary(25, data)["codex"]["seven_day"]["share"], 0)
+        self.assertIn("60% из 60%", usage.check(24, "codex", data))
+        self.assertIsNone(usage.check(25, "codex", data))
+        self.assertEqual(usage.summary(26, free)["codex"]["five_hour"]["share"], 60)  # без лимита — вся подписка
+        # Подписка кончилась целиком: второму не осталось ничего, хотя сам он не тратил.
+        usage.charge(25, "codex", [self.point(60), self.point(100)], time.time())
+        usage._save(usage.user_path(25), {})
+        self.assertIn("вашей части не осталось", usage.check(25, "codex", data))
+        self.assertIn("вашей части не осталось", usage.check(26, "codex", free))
+        # Окно сбросилось — части снова целые.
+        snapshot = usage._load(usage.global_path())
+        snapshot["codex"]["five_hour"]["resets_at"] = time.time() - 1
+        usage._save(usage.global_path(), snapshot)
+        self.assertEqual(usage.summary(25, data)["codex"]["five_hour"]["share"], 0)
+
     def test_stale_base(self):
         usage.charge(21, "claude", [self.point(50)], time.time())
         snapshot = usage._load(usage.global_path())

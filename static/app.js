@@ -179,7 +179,7 @@ function showMe() {
   for (const [engine, windows] of Object.entries(me.limits)) {
     for (const w of Object.keys(WINDOW)) {
       const x = windows[w];
-      if (x.limit < 100 && x.used >= x.limit) warnings.push(`Лимит ${NAME[engine]} (${WINDOW[w]}) исчерпан, сброс ${when(x.resets_at)}.`);
+      if (x.share >= 100) warnings.push(`Лимит ${NAME[engine]} (${WINDOW[w]}) исчерпан, сброс ${when(x.resets_at)}.`);
     }
   }
   showLimits();
@@ -196,12 +196,22 @@ function showMe() {
 }
 
 // Лимиты сети открытой беседы: сначала 5-часовое окно, под ним недельное.
+const percent = (n) => `${Math.round(n * 100) / 100}%`;
+
+// Полоса — сколько своей части окна уже нет: своими запросами или потому, что подписки
+// осталось меньше, чем положено по лимиту.
+function shareText(x) {
+  return x.limit < 100
+    ? `Ваша часть — ${x.limit}% подписки. Вы потратили ${percent(x.used)}, подписка занята на ${percent(x.subscription)}.`
+    : `Без лимита: занятость всей подписки. Вы потратили ${percent(x.used)}.`;
+}
+
 function showLimits() {
   const windows = current && me.limits[current.engine];
   $("#limits").replaceChildren(...(windows ? Object.keys(WINDOW).map((w) => {
     const x = windows[w];
-    const row = meter(WINDOW[w], x.used, x.limit, `${x.used}%` + (x.limit < 100 ? ` из ${x.limit}%` : ""));
-    row.title = `Сброс ${when(x.resets_at)}`;
+    const row = meter(WINDOW[w], x.share, 100, percent(x.share));
+    row.title = `${shareText(x)} Сброс ${when(x.resets_at)}`;
     return row;
   }) : []));
 }
@@ -1314,14 +1324,15 @@ function showCard() {
       const x = stats.limits[engine];
       for (const w of Object.keys(WINDOW)) {
         t.append(row(engineLabel(engine, `${NAME[engine]}, ${WINDOW[w]}`),
-          `${x[w].used}% из ${x[w].limit}%` + (x[w].resets_at ? `, сброс ${when(x[w].resets_at)}` : "")));
+          `части использовано ${percent(x[w].share)}: потратил ${percent(x[w].used)} подписки из ${x[w].limit}%`
+          + (x[w].resets_at ? `, сброс ${when(x[w].resets_at)}` : "")));
       }
       t.append(row(engineLabel(engine, `${NAME[engine]}, токенов всего`), `вход ${x.tokens.in.toLocaleString("ru")}, выход ${x.tokens.out.toLocaleString("ru")}`));
       const g = card.subscription[engine];
       if (g) t.append(row(engineLabel(engine, `${NAME[engine]}, подписка целиком`),
         Object.keys(WINDOW).filter((w) => g[w]).map((w) => `${WINDOW[w]} ${g[w].percent}%`).join(", ")));
     }
-    panel.append(t, el("p", "muted", "Расход — сдвиг общих процентов подписки за время запросов пользователя, точность около 1%. Использование подписки мимо сайта (бот, свой CLI) в момент запроса тоже попадает в расход."));
+    panel.append(t, el("p", "muted", "Расход — сдвиг общих процентов подписки за время запросов пользователя, точность около 1%. Использование подписки мимо сайта (бот, свой CLI) в момент запроса тоже попадает в расход. «Части использовано» учитывает и чужой расход: если подписки осталось меньше, чем положено пользователю по лимиту, ему доступен только остаток."));
     const actions = el("div", "actions");
     const pw = el("button", "", "Сменить пароль");
     pw.onclick = async () => {
