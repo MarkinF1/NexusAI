@@ -1,4 +1,5 @@
 """python -m unittest test_tg — бот через настоящий Dispatcher aiogram, без сети."""
+import os
 import unittest
 
 import test_core  # noqa: F401  фальшивый claude и временная папка данных — до импорта app
@@ -9,7 +10,7 @@ import tg
 import users
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.types import ForumTopic, Message, Update
+from aiogram.types import CallbackQuery, ForumTopic, Message, Update
 
 GROUP = -1001234567890
 
@@ -95,6 +96,41 @@ class Bot_(unittest.IsolatedAsyncioTestCase):
         await app.send(meta["id"], "с сайта", [], user)
         await jobs.jobs[(uid, meta["id"])].task
         self.assertEqual(sum(e["kind"] == "user" for e in core.history(uid, meta["id"])), 2)
+
+    async def press(self, data, message_id, user=500):
+        self.seq += 1
+        message = Message.model_validate(dict(message_id=message_id, date=0, text="x",
+                                              chat=dict(id=user, type="private"),
+                                              from_user=dict(id=999, is_bot=True, first_name="Bot")),
+                                         context={"bot": self.bot})
+        call = CallbackQuery(id=str(self.seq), from_user=dict(id=user, is_bot=False, first_name="U"),
+                             chat_instance="c", data=data, message=message)
+        await tg.dp.feed_update(self.bot, Update(update_id=self.seq, callback_query=call))
+
+    async def test_compact_button(self):
+        uid = users.add("tg-compact", "pw")
+        users.save_settings(uid, {**users.settings(uid), "compact_mb": 1})
+        code = tg.link(uid).split("start=")[1]
+        await self.feed(f"/start {code}", user=520)
+        await self.feed("привет", user=520)
+        sent = [c for c in self.api.calls if c.__api_method__ == "sendMessage"]
+        self.assertIsNone(sent[-1].reply_markup)  # сессия маленькая — кнопки нет
+        [meta] = tg_chats(uid)
+        project = os.path.join(core.claude_home(uid), "projects", "-tg")
+        os.makedirs(project, exist_ok=True)
+        with open(os.path.join(project, meta["sid"] + ".jsonl"), "wb") as f:
+            f.write(b'{"type":"user"}\n' * 80000)  # ~1.3 МБ — больше порога 1 МБ
+        await self.feed("ещё", user=520)
+        sent = [c for c in self.api.calls if c.__api_method__ == "sendMessage"]
+        button = sent[-1].reply_markup.inline_keyboard[0][0]
+        self.assertTrue(button.text.startswith("🗜 Сжать беседу"))
+        self.assertEqual(button.callback_data, f"compact:{meta['id']}")
+        await self.press(button.callback_data, message_id=self.api.next_id, user=520)
+        kinds = [e["kind"] for e in core.history(uid, meta["id"])]
+        self.assertEqual(kinds[-3:], ["compact", "compacted", "done"])  # без «ошибки»: у /compact нет текста
+        self.assertEqual(self.api.texts()[-1], "Беседа сжата: было ≈14 тыс. токенов")
+        await self.press(f"compact:{meta['id']}", message_id=1, user=521)  # чужой: не привязан
+        self.assertEqual(sum(e["kind"] == "compact" for e in core.history(uid, meta["id"])), 1)
 
     async def test_group(self):
         owner, guest = users.add("group-owner", "pw"), users.add("guest", "pw")

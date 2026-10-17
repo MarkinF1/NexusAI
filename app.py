@@ -45,6 +45,10 @@ TG_TOKEN = os.environ.get("NEXUS_TG_TOKEN", "")
 async def lifespan(app):
     """Бот Telegram живёт в процессе сайта: общие беседы, ответы и уведомления."""
     task = None
+    # Новый процесс: флаг обновления от прежнего больше не нужен, счётчики — с нуля.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(jobs.DRAIN)
+    jobs.save_busy()
     if TG_TOKEN:
         task = asyncio.create_task(tg.run(TG_TOKEN))
     yield
@@ -214,7 +218,25 @@ def get_chat(chat: str, user=Depends(current_user)):
 
 @app.get("/api/chats/{chat}/size")
 def chat_size(chat: str, user=Depends(current_user)):
-    return core.chat_size(user["id"], own_chat(user, chat))
+    """Размер беседы; limit — порог «Сжать беседу» пользователя (0 — не предлагать)."""
+    meta = own_chat(user, chat)
+    size = core.chat_size(user["id"], meta)
+    return {**size, "limit": users.settings(user["id"])["compact_mb"] * 2 ** 20,
+            "compactable": meta["engine"] == "claude" and size["context"] > 0}
+
+
+@app.post("/api/chats/{chat}/compact")
+async def compact(chat: str, user=Depends(current_user)):
+    """«Сжать беседу»: claude заменяет старую часть сессии кратким содержанием (/compact).
+    Идёт как обычный ответ — с лимитами подписки и событиями в ленте."""
+    meta = own_chat(user, chat)
+    idle(user, chat)
+    in_tg(meta)
+    try:
+        await jobs.compact(user["id"], meta)
+    except jobs.Refused as e:
+        raise HTTPException(e.status, str(e))
+    return {}
 
 
 class ChatChange(BaseModel):
@@ -315,6 +337,8 @@ async def voice(chat: str, audio: UploadFile = File(...), duration: float = Form
     meta = own_chat(user, chat)
     idle(user, chat)
     in_tg(meta)
+    if jobs.draining():
+        raise HTTPException(503, jobs.UPDATING)
     if not 0 < duration <= MAX_VOICE_SECONDS:
         raise HTTPException(400, f"Голосовое должно быть до {MAX_VOICE_SECONDS // 60} минут")
     data = await upload_bytes(audio, MAX_VOICE)
@@ -327,6 +351,7 @@ async def voice(chat: str, audio: UploadFile = File(...), duration: float = Form
               "peaks": voice_peaks(peaks), "ts": time.time()}]
     core.append_history(*key, added[0])
     jobs.transcribing[key] += 1
+    jobs.save_busy()
     try:
         text = await stt.transcribe(data)
         added.append({"kind": "transcript", "voice": vid, "text": text} if text else
@@ -338,6 +363,7 @@ async def voice(chat: str, audio: UploadFile = File(...), duration: float = Form
         jobs.transcribing[key] -= 1
         if not jobs.transcribing[key]:
             del jobs.transcribing[key]
+        jobs.save_busy()
     core.append_history(*key, added[1])
     return {"events": added}
 

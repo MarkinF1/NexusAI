@@ -223,6 +223,19 @@ function showLimits() {
   }) : []));
 }
 
+let compactOffer = false;  // сессия открытой беседы больше порога сжатия
+
+$("#compact").onclick = async () => {
+  if (!confirm("Сжать беседу? Claude заменит старую часть разговора кратким содержанием — "
+    + "подробности оттуда модель забудет. Переписка на сайте останется.")) return;
+  try {
+    await api(`/api/chats/${current.id}/compact`, { method: "POST" });
+  } catch (err) { return alert(err.message); }
+  setRunning(true);
+  follow();
+  scrollDown(true);
+};
+
 // Размер беседы в шапке: главное — сессия модели, остальное в подсказке.
 async function showSize() {
   const id = current?.id;
@@ -231,10 +244,17 @@ async function showSize() {
   try { s = await api(`/api/chats/${id}/size`); } catch { return; }
   if (current?.id !== id) return;
   const box = $("#chat-size");
-  box.textContent = "Сессия " + size(s.session);
-  box.title = `Сессия модели: ${size(s.session)} — модель перечитывает её на каждом ответе\n`
-    + `Журнал сайта: ${size(s.history)}\nФайлы беседы: ${size(s.files)}\nГолосовые: ${size(s.voice)}`;
+  box.textContent = "Сессия " + size(s.context);
+  box.title = `Сессия модели: ${size(s.context)} — модель перечитывает её на каждом ответе`
+    + (s.session > s.context ? ` (после последнего сжатия; файл целиком ${size(s.session)})` : "")
+    + `\nЖурнал сайта: ${size(s.history)}\nФайлы беседы: ${size(s.files)}\nГолосовые: ${size(s.voice)}`;
   box.hidden = false;
+  // Сессия больше порога пользователя — предлагаем сжать (только Claude: Codex сжимает сам).
+  compactOffer = s.compactable && s.limit > 0 && s.context > s.limit;
+  $("#compact-text").textContent = `Беседа выросла до ${size(s.context)}`;
+  $("#compact-bar").title = `Порог — ${size(s.limit)}. Модель перечитывает сессию на каждом ответе: `
+    + "после сжатия лимиты будут уходить медленнее.";
+  $("#compact-bar").hidden = !compactOffer || running;
 }
 
 async function refreshMe() {
@@ -312,6 +332,8 @@ async function openChat(id) {
   setRunning(data.running);
   if (data.running) follow();
   $("#chat-size").hidden = true;
+  compactOffer = false;
+  $("#compact-bar").hidden = true;
   showSize();
   loadChats();
   scrollDown(true);
@@ -525,6 +547,12 @@ function render(ev) {
     node = el("div", "msg-error", ev.text);
   } else if (ev.kind === "error") {
     node = el("div", "msg-error", "Ошибка: " + ev.text);
+  } else if (ev.kind === "compact") {
+    endTurn();
+    node = el("div", "msg-note", "Сжатие беседы…");
+  } else if (ev.kind === "compacted") {
+    const was = ev.tokens ? `: было ≈${Math.round(ev.tokens / 1000).toLocaleString("ru")} тыс. токенов` : "";
+    node = el("div", "msg-note", (ev.auto ? "Claude сам сжал беседу" : "Беседа сжата") + was);
   } else if (ev.kind === "stopped") {
     node = el("div", "msg-note", "Остановлено");
   } else if (ev.kind === "voice") {
@@ -568,6 +596,7 @@ function updateSend() {
 function setRunning(on) {
   running = on;
   updateSend();
+  $("#compact-bar").hidden = on || !compactOffer;
   $("#feed > .thinking")?.remove();
   if (on) $("#feed").append(el("div", "thinking"));
 }
@@ -1396,7 +1425,10 @@ function showCard() {
       panel.append(bar);
     }
     panel.append(numberField("Лимит, МБ (0 — без лимита):", settings.quota_mb, (v) => { settings.quota_mb = v; }),
-      el("p", "muted", "При превышении пользователь не сможет загружать новые файлы и увидит предупреждение. Писать сообщения он сможет."));
+      el("p", "muted", "При превышении пользователь не сможет загружать новые файлы и увидит предупреждение. Писать сообщения он сможет."),
+      numberField("Предлагать сжать беседу, когда сессия больше, МБ (0 — не предлагать):", settings.compact_mb, (v) => { settings.compact_mb = v; }),
+      el("p", "muted", "Сессию модель перечитывает на каждом ответе: чем она больше, тем быстрее уходят лимиты. "
+        + "Над полем ввода появится кнопка «Сжать беседу». Сжатие есть только у Claude, Codex сжимает беседы сам."));
   }
 
   if (cardTab === "access") {

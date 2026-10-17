@@ -1,7 +1,9 @@
 """Идущие ответы: проверки, запуск модели и журнал беседы. Общие для сайта и бота."""
 import asyncio
 import collections
+import json
 import logging
+import os
 import time
 
 import core
@@ -27,6 +29,7 @@ class Job:
         self.proc = None
         self.task = None  # ссылка держит задачу от сборщика мусора
         self.stopped = False
+        self.raw = False  # служебная команда CLI: уходит как есть, без приписки о папке
         self.cond = asyncio.Condition()
 
     def attach(self, proc):
@@ -83,6 +86,8 @@ def human(n):
 
 def check(uid, meta, incoming=0):
     """Настройки пользователя, если ему можно отправить сообщение в эту беседу."""
+    if draining():
+        raise Refused(503, UPDATING)
     data = users.settings(uid)
     reason = allowed_model(users.available(data), meta["engine"], meta["model"], meta["effort"])
     if reason:
@@ -107,20 +112,68 @@ def room(uid, data, incoming):
 
 transcribing = collections.Counter()  # (uid, chat) -> сколько голосовых сейчас расшифровывается
 
+# Обновление без обрыва (update.sh): пока лежит DRAIN, новые ответы не начинаются, а
+# перезапуск ждёт, пока в BUSY не станет ноль идущих ответов и расшифровок.
+BUSY = os.path.join(core.DATA, "busy.json")
+DRAIN = os.path.join(core.DATA, "draining")
+UPDATING = "Сайт обновляется: отправьте сообщение через минуту"
 
-async def start(uid, meta, text, data, saved=(), images=(), channel="web"):
-    """Запуск ответа. saved — имена уже сохранённых в files/from_user вложений."""
+
+def draining():
+    return os.path.exists(DRAIN)
+
+
+def save_busy():
+    """pid — чтобы update.sh не поверил файлу, оставшемуся от прежнего процесса."""
+    try:
+        tmp = BUSY + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "jobs": len(jobs), "transcribing": sum(transcribing.values())}, f)
+        os.replace(tmp, BUSY)
+    except OSError:
+        log.exception("busy.json")
+
+
+def compact_due(uid, meta):
+    """(размер, порог), если беседу Claude пора предложить сжать; иначе None."""
+    if meta["engine"] != "claude":
+        return None
+    limit = users.settings(uid)["compact_mb"] * 2 ** 20
+    size = core.chat_size(uid, meta)["context"] if limit else 0
+    return (size, limit) if limit and size > limit else None
+
+
+async def compact(uid, meta, channel="web"):
+    """«Сжать беседу»: claude заменяет старую часть сессии кратким содержанием (/compact).
+    Идёт как обычный ответ — с лимитами подписки и событиями в ленте. Нельзя — Refused."""
+    if draining():
+        raise Refused(503, UPDATING)
+    if meta["engine"] != "claude":
+        raise Refused(400, "Сжимать беседу умеет только Claude: Codex делает это сам")
+    if not core.chat_size(uid, meta)["context"]:
+        raise Refused(400, "Сжимать пока нечего")
+    data = check(uid, meta)
+    return await start(uid, meta, "/compact", data, channel=channel, shown={"kind": "compact", "ts": time.time()})
+
+
+async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown=None):
+    """Запуск ответа. saved — имена уже сохранённых в files/from_user вложений.
+    shown — событие ленты вместо реплики пользователя (служебная команда вроде /compact)."""
     key = (uid, meta["id"])
     if key in jobs:
         raise Refused(409, "Дождитесь ответа или остановите его")
+    if draining():
+        raise Refused(503, UPDATING)
     jobs[key] = job = Job()  # занимаем беседу до первого await
+    save_busy()
     notes = "\n".join(f"Вложение: files/from_user/{name}" for name in saved)
     prompt = "\n\n".join(p for p in (text, notes) if p)
-    if not meta["title"]:
+    if not meta["title"] and not shown:
         meta["title"] = text.strip().replace("\n", " ")[:60]
     meta["updated"] = time.time()
     core.save_chat(uid, meta)
-    await push(key, job, {"kind": "user", "text": text, "files": list(saved), "ts": time.time()})
+    await push(key, job, shown or {"kind": "user", "text": text, "files": list(saved), "ts": time.time()})
+    job.raw = bool(shown)
     job.task = asyncio.create_task(work(uid, meta, prompt, list(images), job, data, channel))
     return job
 
@@ -137,7 +190,7 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
     points, tokens, limited = [], [0, 0], None
     try:
         async for event in core.run(uid, meta, prompt, data["access"][engine], images,
-                                    on_proc=job.attach, channel=channel):
+                                    on_proc=job.attach, channel=channel, raw=job.raw):
             if event["kind"] == "limits":
                 points.append(event)
                 limited = limited or usage.check(uid, engine, data, points, started)
@@ -176,6 +229,7 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
         async with job.cond:
             core.append_history(uid, meta["id"], {"kind": "done", "files": files, "ts": time.time()})
             del jobs[key]
+            save_busy()
             job.cond.notify_all()
         if notify and not in_tg(meta) and not watchers[key]:
             # Вкладку закрыли, не дождавшись: ответ готов — скажем в Telegram.

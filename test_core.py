@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -15,8 +16,13 @@ with open(FAKE, "w") as f:
     # Печатает stream-json как claude -p; FAKE_MODE=hang зависает после первой строки.
     f.write(f"""#!{sys.executable}
 import json, os, sys, time
-sys.stdin.read()
+data = sys.stdin.read()
 print(json.dumps({{"type": "system", "subtype": "init"}}), flush=True)
+if '"text": "/compact"' in data:
+    print(json.dumps({{"type": "system", "subtype": "compact_boundary",
+                      "compact_metadata": {{"trigger": "manual", "pre_tokens": 13500}}}}))
+    print(json.dumps({{"type": "result", "is_error": False, "result": ""}}))
+    sys.exit()
 print(json.dumps({{"type": "assistant", "message": {{"content": [
     {{"type": "tool_use", "name": "Bash", "input": {{"command": "ls files"}}}}]}}}}), flush=True)
 if os.environ.get("FAKE_MODE") == "hang":
@@ -255,6 +261,40 @@ class Library(unittest.TestCase):
         with self.assertRaises(HTTPException):
             app.chat_size(meta["id"], {"id": 40, "is_admin": False})
 
+    def test_compact(self):
+        owner = {"id": 43, "is_admin": False}
+        meta = core.save_chat(43, {**core.create_chat(43, "claude", "sonnet"), "sid": "22222222-2222-3333-4444-555555555555"})
+        with self.assertRaises(HTTPException):  # сессии ещё нет — сжимать нечего
+            asyncio.run(app.compact(meta["id"], owner))
+        project = os.path.join(core.claude_home(43), "projects", "-tmp-y")
+        os.makedirs(project)
+        lines = [b'{"type":"user","n":1}\n' * 50, b'{"type":"system","subtype":"compact_boundary"}\n',
+                 b'{"type":"user","after":true}\n']
+        with open(os.path.join(project, meta["sid"] + ".jsonl"), "wb") as f:
+            f.write(b"".join(lines))
+        size = app.chat_size(meta["id"], owner)
+        self.assertEqual(size["context"], len(lines[2]))  # перечитывается только часть после сжатия
+        self.assertEqual(size["session"], sum(map(len, lines)))
+        self.assertTrue(size["compactable"])
+        self.assertEqual(size["limit"], users.COMPACT_MB * 2 ** 20)  # порог по умолчанию — из .env
+        with unittest.mock.patch("jobs.check", return_value={}), \
+                unittest.mock.patch("jobs.start", unittest.mock.AsyncMock()) as start:
+            asyncio.run(app.compact(meta["id"], owner))
+        self.assertEqual(start.await_args.args[2], "/compact")
+        self.assertEqual(start.await_args.kwargs["shown"]["kind"], "compact")
+        codex = core.create_chat(43, "codex", "gpt")
+        with self.assertRaises(HTTPException):
+            asyncio.run(app.compact(codex["id"], owner))
+        self.assertFalse(app.chat_size(codex["id"], owner)["compactable"])
+        events = list(core.claude_events({"type": "system", "subtype": "compact_boundary",
+                                          "compact_metadata": {"trigger": "manual", "pre_tokens": 1842}}))
+        self.assertEqual(events, [{"kind": "compacted", "tokens": 1842, "auto": False}])
+        self.assertEqual(users.clean({"compact_mb": 12})["compact_mb"], 12)
+        self.assertEqual(users.clean({"compact_mb": 0})["compact_mb"], 0)  # явный 0 — не предлагать
+        self.assertEqual(users.clean({})["compact_mb"], users.COMPACT_MB)
+        with self.assertRaises(ValueError):
+            users.clean({"compact_mb": -1})
+
     def test_delete_files(self):
         owner = {"id": 36, "is_admin": False}
         a = core.create_chat(36, "claude", "sonnet")["id"]
@@ -372,6 +412,36 @@ class Voice(unittest.TestCase):
         finally:
             del jobs.transcribing[(42, chat)]
         self.assertFalse(app.get_chat(chat, owner)["transcribing"])
+
+class Update(unittest.TestCase):
+    def test_drain_and_busy(self):
+        owner = {"id": 44, "is_admin": False}
+        meta = core.create_chat(44, "claude", "sonnet")
+        jobs.save_busy()
+        with open(jobs.BUSY) as f:
+            self.assertEqual(json.load(f), {"pid": os.getpid(), "jobs": 0, "transcribing": 0})
+        jobs.transcribing[(44, meta["id"])] += 2
+        jobs.save_busy()
+        with open(jobs.BUSY) as f:
+            self.assertEqual(json.load(f)["transcribing"], 2)
+        del jobs.transcribing[(44, meta["id"])]
+        open(jobs.DRAIN, "w").close()
+        try:
+            for call in (lambda: asyncio.run(app.send(meta["id"], "привет", [], owner)),
+                         lambda: asyncio.run(app.compact(meta["id"], owner)),
+                         lambda: asyncio.run(app.voice(meta["id"], Voice.upload(None), 1.0, "", owner))):
+                with self.assertRaises(HTTPException) as caught:
+                    call()
+                self.assertEqual(caught.exception.status_code, 503)
+            with self.assertRaises(jobs.Refused):  # бот зовёт start напрямую
+                asyncio.run(jobs.start(44, meta, "привет", {}))
+        finally:
+            os.remove(jobs.DRAIN)
+        self.assertNotIn((44, meta["id"]), jobs.jobs)
+
+    def test_update_script(self):
+        self.assertEqual(subprocess.run(["bash", "-n", os.path.join(core.HERE, "update.sh")]).returncode, 0)
+
 
 class Access(unittest.TestCase):
     def test_paths(self):

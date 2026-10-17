@@ -221,20 +221,40 @@ def tree_size(path):
     return total
 
 
+# Строка журнала сессии, после которой CLI начинает контекст заново.
+COMPACT_MARK = {"claude": b'"subtype":"compact_boundary"', "codex": b'"type":"compacted"'}
+
+
+def after_mark(path, mark):
+    """Байты файла после последней строки с mark; без неё — весь файл."""
+    since = 0
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                since = 0 if mark in line else since + len(line)
+    except OSError:
+        return 0
+    return since
+
+
 def chat_size(uid, meta):
-    """Байты беседы: сессия CLI (её модель перечитывает на каждом ответе), журнал сайта,
-    файлы и голосовые."""
+    """Байты беседы. context — сессия CLI после последнего сжатия: её модель перечитывает
+    на каждом ответе. Сжатие дописывает в тот же файл, поэтому session (файл целиком) не
+    уменьшается. Плюс журнал сайта, файлы и голосовые."""
     sid, chat = meta.get("sid"), meta["id"]
-    session = 0
+    session = context = 0
     if sid:
         if meta["engine"] == "claude":
             # <sid>.jsonl и папка <sid>/ рядом — вложенные агенты той же сессии
             pattern = os.path.join(claude_home(uid), "projects", "*", glob.escape(sid))
-            session = sum(tree_size(p) for p in glob.glob(pattern + ".jsonl") + glob.glob(pattern))
+            main = glob.glob(pattern + ".jsonl")
+            session = sum(tree_size(p) for p in main + glob.glob(pattern))
         else:
-            session = sum(tree_size(p) for p in glob.glob(os.path.join(
-                codex_home(uid), "sessions", "*", "*", "*", f"rollout-*-{glob.escape(sid)}.jsonl")))
-    return {"session": session,
+            main = glob.glob(os.path.join(codex_home(uid), "sessions", "*", "*", "*",
+                                          f"rollout-*-{glob.escape(sid)}.jsonl"))
+            session = sum(tree_size(p) for p in main)
+        context = sum(after_mark(p, COMPACT_MARK[meta["engine"]]) for p in main)
+    return {"session": session, "context": context,
             "history": sum(tree_size(chat_file(uid, chat, ext)) for ext in (".json", ".jsonl", ".links.json")),
             "files": tree_size(os.path.join(data_dir(uid), "workspaces", chat, "files")),
             "voice": tree_size(voice_dir(uid, chat))}
@@ -357,6 +377,10 @@ def tool_input(name, data):
 
 def claude_events(rec):
     """События ленты из строки stream-json claude."""
+    if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+        info = rec.get("compact_metadata") or rec.get("compactMetadata") or {}
+        yield {"kind": "compacted", "tokens": info.get("pre_tokens") or info.get("preTokens") or 0,
+               "auto": (info.get("trigger") == "auto")}
     if rec.get("type") == "assistant":
         for block in rec.get("message", {}).get("content", []):
             if block.get("type") == "text" and block.get("text"):
@@ -654,16 +678,17 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
     return args + ["-"]  # промпт со stdin: длинный текст в аргумент не влезет
 
 
-async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, channel="web"):
+async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, channel="web", raw=False):
     """Асинхронный генератор событий ответа. Ошибку CLI поднимает RuntimeError.
 
     Кроме событий ленты отдаёт служебные: limits (проценты окон подписки у claude)
     и tokens — их в историю не пишут.
     meta меняется на месте: codex выдаёт id сессии только в первом ответе.
+    raw — служебная команда (/compact): без приписки о папке, иначе CLI примет её за аргументы.
     on_proc получает процесс, чтобы его можно было остановить через stop().
     """
     cwd = workspace(uid, meta["id"])
-    prompt = file_prompt(cwd, text)
+    prompt = text if raw else file_prompt(cwd, text)
     images = fit_images(images)
     files = []
     if meta["engine"] == "claude":
@@ -740,7 +765,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
                 fatal = fatal or kind == "turn.failed"
                 err = (rec.get("error") or {}).get("message") or rec.get("message") or "ошибка codex"
             for event in parse(rec):
-                said = said or event["kind"] == "text"
+                said = said or event["kind"] in ("text", "compacted")  # у /compact текста нет
                 yield event
         await proc.wait()
     finally:

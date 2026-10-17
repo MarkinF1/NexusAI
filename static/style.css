@@ -253,6 +253,15 @@ a.chip:hover { border-color: var(--engine); }
 #send { flex: none; width: 38px; height: 38px; padding: 0; border-radius: 10px; display: grid; place-items: center; }
 #send svg { width: 20px; height: 20px; fill: currentColor; }
 #send.stop { background: none; color: var(--ink); border-color: var(--line); }
+/* Предложение сжать беседу — над полем ввода */
+#compact-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px !important; padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--muted); font-size: 13.5px;
+}
+#compact-bar[hidden] { display: none; }
+#compact-bar span { flex: 1; min-width: 0; }
+#compact-bar button { flex: none; white-space: nowrap; color: var(--ink); }
+
 /* --- Голосовые --- */
 /* Удержание микрофона: без прокрутки, выделения и меню iOS */
 #send[data-mode="mic"] { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
