@@ -212,6 +212,11 @@ def get_chat(chat: str, user=Depends(current_user)):
             "transcribing": jobs.transcribing[(user["id"], chat)] > 0}
 
 
+@app.get("/api/chats/{chat}/size")
+def chat_size(chat: str, user=Depends(current_user)):
+    return core.chat_size(user["id"], own_chat(user, chat))
+
+
 class ChatChange(BaseModel):
     title: str | None = None
     model: str | None = None

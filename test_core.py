@@ -237,6 +237,24 @@ class Library(unittest.TestCase):
         self.assertEqual([f["path"] for f in app.list_files(chat, owner)],
                          ["files/for_user/a-new.txt", "files/general/z-mid.txt", "files/from_user/b-old.txt"])
 
+    def test_chat_size(self):
+        owner = {"id": 39, "is_admin": False}
+        meta = core.create_chat(39, "claude", "sonnet")
+        self.assertEqual(app.chat_size(meta["id"], owner)["session"], 0)  # сессии ещё нет
+        meta = core.save_chat(39, {**meta, "sid": "11111111-2222-3333-4444-555555555555"})
+        project = os.path.join(core.claude_home(39), "projects", "-tmp-x")
+        os.makedirs(os.path.join(project, meta["sid"], "subagents"))
+        with open(os.path.join(project, meta["sid"] + ".jsonl"), "wb") as f:
+            f.write(b"x" * 1000)
+        with open(os.path.join(project, meta["sid"], "subagents", "a.jsonl"), "wb") as f:
+            f.write(b"x" * 200)
+        self.put(core.workspace(39, meta["id"]), "general", "f.txt", b"y" * 50)
+        size = app.chat_size(meta["id"], owner)
+        self.assertEqual((size["session"], size["files"], size["voice"]), (1200, 50, 0))
+        self.assertGreater(size["history"], 0)
+        with self.assertRaises(HTTPException):
+            app.chat_size(meta["id"], {"id": 40, "is_admin": False})
+
     def test_delete_files(self):
         owner = {"id": 36, "is_admin": False}
         a = core.create_chat(36, "claude", "sonnet")["id"]

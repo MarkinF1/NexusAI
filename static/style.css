@@ -159,6 +159,7 @@ input, textarea {
 }
 #pick:not([hidden]) { display: flex; gap: 8px; min-width: 0; }
 /* Лимиты сети беседы — последней строкой шапки во всю ширину: 5 часов, под ними неделя */
+#chat-size { color: var(--muted); font-size: 12.5px; white-space: nowrap; cursor: default; }
 #limits { order: 9; flex: 1 1 100%; }
 #limits:empty { display: none; }
 #limits .meter { column-gap: 10px; row-gap: 2px; font-size: 11.5px; margin: 0; line-height: 1.35; }
@@ -468,7 +469,7 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   #chat header::after { content: ""; order: 3; flex-basis: 100%; }
   #title { order: 1; flex: 1; min-width: 0; font-size: 16px; }
   #files-open, #delete { order: 2; }
-  #pick:not([hidden]) { order: 4; }
+  #pick:not([hidden]), #chat-size { order: 4; }
   #chat header select { min-width: 0; padding: 5px 8px; }
   #feed { padding: 18px 12px 8px; }
   #feed > * { padding-left: 26px; background-position-x: 7px; }

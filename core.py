@@ -203,6 +203,43 @@ def voice_dir(uid, chat):
     return os.path.join(user_dir(uid), "voice", chat)
 
 
+def tree_size(path):
+    """Байты файла или папки целиком; ссылки не раскрываются."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return 0
+    if not os.path.isdir(path) or os.path.islink(path):
+        return info.st_size
+    total = 0
+    for current, _, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(current, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def chat_size(uid, meta):
+    """Байты беседы: сессия CLI (её модель перечитывает на каждом ответе), журнал сайта,
+    файлы и голосовые."""
+    sid, chat = meta.get("sid"), meta["id"]
+    session = 0
+    if sid:
+        if meta["engine"] == "claude":
+            # <sid>.jsonl и папка <sid>/ рядом — вложенные агенты той же сессии
+            pattern = os.path.join(claude_home(uid), "projects", "*", glob.escape(sid))
+            session = sum(tree_size(p) for p in glob.glob(pattern + ".jsonl") + glob.glob(pattern))
+        else:
+            session = sum(tree_size(p) for p in glob.glob(os.path.join(
+                codex_home(uid), "sessions", "*", "*", "*", f"rollout-*-{glob.escape(sid)}.jsonl")))
+    return {"session": session,
+            "history": sum(tree_size(chat_file(uid, chat, ext)) for ext in (".json", ".jsonl", ".links.json")),
+            "files": tree_size(os.path.join(data_dir(uid), "workspaces", chat, "files")),
+            "voice": tree_size(voice_dir(uid, chat))}
+
+
 def delete_chat(uid, meta, files=True):
     """files — удалить и файлы беседы из библиотеки. Иначе они остаются там, включая
     ещё не обработанные вложения и неотданные файлы модели."""

@@ -216,6 +216,20 @@ function showLimits() {
   }) : []));
 }
 
+// Размер беседы в шапке: главное — сессия модели, остальное в подсказке.
+async function showSize() {
+  const id = current?.id;
+  if (!id) return;
+  let s;
+  try { s = await api(`/api/chats/${id}/size`); } catch { return; }
+  if (current?.id !== id) return;
+  const box = $("#chat-size");
+  box.textContent = "Сессия " + size(s.session);
+  box.title = `Сессия модели: ${size(s.session)} — модель перечитывает её на каждом ответе\n`
+    + `Журнал сайта: ${size(s.history)}\nФайлы беседы: ${size(s.files)}\nГолосовые: ${size(s.voice)}`;
+  box.hidden = false;
+}
+
 async function refreshMe() {
   me = await api("/api/me");
   showMe();
@@ -290,6 +304,8 @@ async function openChat(id) {
   $("#tg-bar").hidden = !inTg;
   setRunning(data.running);
   if (data.running) follow();
+  $("#chat-size").hidden = true;
+  showSize();
   loadChats();
   scrollDown(true);
 }
@@ -563,6 +579,7 @@ function follow() {
     setRunning(false);
     loadChats();
     refreshMe();
+    showSize();
   });
   stream.onerror = () => {
     // Сеть моргнула или вкладка спала: перечитываем беседу, ответ на сервере идёт дальше.
@@ -831,6 +848,7 @@ async function uploadVoice(blob, duration, peaks) {
     scrollDown();
   }
   updateSend();
+  showSize();
 }
 
 // --- Голосовые: плеер ---
@@ -1022,6 +1040,7 @@ function showFiles() {
       } catch (err) { return alert(err.message); }
       chatFiles = chatFiles.filter((x) => x !== f);
       showFiles();
+      showSize();
     }));
     return li;
   }) : [el("li", "muted", chatFiles.length ? "Ничего не найдено" : "Пока пусто")]));
