@@ -44,15 +44,15 @@ TG_TOKEN = os.environ.get("NEXUS_TG_TOKEN", "")
 @contextlib.asynccontextmanager
 async def lifespan(app):
     """Бот Telegram живёт в процессе сайта: общие беседы, ответы и уведомления."""
-    task = None
     # Новый процесс: флаг обновления от прежнего больше не нужен, счётчики — с нуля.
     with contextlib.suppress(FileNotFoundError):
         os.remove(jobs.DRAIN)
     jobs.save_busy()
+    tasks = [asyncio.create_task(usage.poll(core.engines()))]
     if TG_TOKEN:
-        task = asyncio.create_task(tg.run(TG_TOKEN))
+        tasks.append(asyncio.create_task(tg.run(TG_TOKEN)))
     yield
-    if task:
+    for task in tasks:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task

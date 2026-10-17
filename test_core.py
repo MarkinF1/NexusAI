@@ -692,6 +692,10 @@ class Settings(unittest.TestCase):
 class Accounting(unittest.TestCase):
     R5, RW = 4102444800, 4103049600
 
+    def keep_snapshot(self):
+        before = usage.global_snapshot()
+        self.addCleanup(usage._save, usage.global_path(), before)
+
     def point(self, percent, window="five_hour", resets=None):
         return {"kind": "limits", "window": window, "percent": percent, "resets_at": resets or self.R5}
 
@@ -744,6 +748,52 @@ class Accounting(unittest.TestCase):
         usage._save(usage.global_path(), snapshot)
         usage.charge(22, "claude", [self.point(70), self.point(71)], time.time())
         self.assertEqual(usage._load(usage.user_path(22))["claude"]["five_hour"]["used"], 1)
+
+    def test_refresh(self):
+        """Опрос подписки: проценты обоих окон в общий снимок, ошибка сети снимок не трогает."""
+        self.keep_snapshot()
+        reply = {"claude": {"five_hour": {"utilization": 38.0, "resets_at": "2100-01-01T00:00:00+00:00"},
+                            "seven_day": {"utilization": 55.0, "resets_at": None}},
+                 "codex": {"rate_limit": {
+                     "primary_window": {"used_percent": 7, "limit_window_seconds": 18000, "reset_at": self.R5},
+                     "secondary_window": {"used_percent": 100, "limit_window_seconds": 604800,
+                                          "reset_at": self.RW}}}}
+        creds = {core.HOST_CREDS: {"claudeAiOauth": {"accessToken": "t"}},
+                 core.CODEX_HOST_AUTH: {"tokens": {"access_token": "t", "account_id": "a"}}}
+        seen = []
+
+        def get(url, headers):
+            seen.append(headers["Authorization"])
+            return reply["claude" if "anthropic" in url else "codex"]
+
+        load = usage._load
+        with unittest.mock.patch.object(usage, "_get", get), \
+                unittest.mock.patch.object(usage, "_load", lambda p: creds.get(p) or load(p)):
+            self.assertTrue(usage.refresh("claude"))
+            self.assertTrue(usage.refresh("codex"))
+        self.assertEqual(seen, ["Bearer t", "Bearer t"])
+        snap = usage.global_snapshot()
+        self.assertEqual(usage.subscription(snap, "claude", "five_hour"), (38.0, 4102444800))
+        self.assertEqual(usage.subscription(snap, "claude", "seven_day"), (0, 0))  # окно не начато
+        self.assertEqual(usage.subscription(snap, "codex", "five_hour"), (7.0, self.R5))
+        self.assertEqual(usage.subscription(snap, "codex", "seven_day"), (100.0, self.RW))
+        data = users.clean({})
+        self.assertIn("вашей части не осталось", usage.over(usage.summary(27, data)["codex"]))
+
+        def fail(url, headers):
+            raise OSError("offline")
+        with unittest.mock.patch.object(usage, "_get", fail):
+            self.assertFalse(usage.refresh("codex"))
+        self.assertEqual(usage.global_snapshot(), snap)
+
+    def test_base_at_start(self):
+        """Опрос посреди запуска не уменьшает его расход: база — снимок на старте."""
+        self.keep_snapshot()
+        usage.charge(28, "claude", [self.point(10)], time.time())
+        base, started = usage.global_snapshot(), time.time()
+        usage.store("claude", {"five_hour": (15, self.R5)})  # опрос: часть запуска уже потрачена
+        usage.charge(28, "claude", [self.point(20)], started, base=base)
+        self.assertEqual(usage._load(usage.user_path(28))["claude"]["five_hour"]["used"], 10)
 
     def test_disk(self):
         cwd = core.workspace(23, core.create_chat(23, "claude", "sonnet")["id"])

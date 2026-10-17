@@ -188,12 +188,13 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
     key, ok = (uid, meta["id"]), False
     engine, started = meta["engine"], time.time()
     points, tokens, limited = [], [0, 0], None
+    base = usage.global_snapshot()
     try:
         async for event in core.run(uid, meta, prompt, data["access"][engine], images,
                                     on_proc=job.attach, channel=channel, raw=job.raw):
             if event["kind"] == "limits":
                 points.append(event)
-                limited = limited or usage.check(uid, engine, data, points, started)
+                limited = limited or usage.check(uid, engine, data, points, started, base)
                 if limited and job.proc:
                     core.stop(job.proc)  # лимит исчерпан посреди ответа
             elif event["kind"] == "tokens":
@@ -211,7 +212,7 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
         try:
             if engine == "codex":
                 points += core.codex_limits(uid, meta["sid"], started)
-            usage.charge(uid, engine, points, started, tokens)
+            usage.charge(uid, engine, points, started, tokens, base)
         except Exception:
             log.exception("usage failed")
         files = []

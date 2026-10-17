@@ -7,13 +7,18 @@ ponytail: использование подписки мимо сайта (TG-б
 спишется на пользователя сайта, а одновременные запуски получат общий сдвиг оба —
 лимиты срабатывают с запасом. Точность ~1%: окна отдаются целыми процентами.
 """
+import asyncio
 import json
+import logging
 import os
 import time
+import urllib.request
+from datetime import datetime
 
 import core
 import users
 
+log = logging.getLogger("nexus.usage")
 FRESH = 300  # общий снимок старше этого не годится как база: сдвиг мог сделать кто-то ещё
 LIMIT_KEYS = {"five_hour": "limit_5h", "seven_day": "limit_week"}
 NAMES = {"five_hour": "на 5 часов", "seven_day": "на неделю"}
@@ -42,24 +47,100 @@ def user_path(uid):
     return os.path.join(core.user_dir(uid), "usage.json")
 
 
+# Свежая занятость подписки: те же адреса, что у /usage в claude и /status в codex.
+# Так видно и расход мимо сайта (свой CLI, другие программы), а не только снимок
+# последнего запуска на сайте.
+REFRESH = int(os.environ.get("NEXUS_USAGE_REFRESH", "120"))  # секунды; 0 — не опрашивать
+CLAUDE_URL = "https://api.anthropic.com/api/oauth/usage"
+CODEX_URL = "https://chatgpt.com/backend-api/wham/usage"
+CODEX_WINDOWS = {18000: "five_hour", 604800: "seven_day"}
+
+
+def _get(url, headers):
+    request = urllib.request.Request(url, headers={"User-Agent": "nexus-ai", **headers})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response)
+
+
+def _stamp(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0
+
+
+def fetch_claude():
+    """{окно: (процент, сброс)}. Токен берём общий, обновляет его сам CLI.
+    ponytail: если сайт долго не запускал claude и токен истёк, опрос молчит до запуска."""
+    token = _load(core.HOST_CREDS)["claudeAiOauth"]["accessToken"]
+    data = _get(CLAUDE_URL, {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
+    return {window: (float(w["utilization"]), _stamp(w.get("resets_at")))
+            for window in core.WINDOWS if (w := data.get(window) or {}).get("utilization") is not None}
+
+
+def fetch_codex():
+    tokens = _load(core.CODEX_HOST_AUTH)["tokens"]
+    data = _get(CODEX_URL, {"Authorization": f"Bearer {tokens['access_token']}",
+                            "ChatGPT-Account-Id": tokens.get("account_id", "")})
+    found = {}
+    for w in ((data.get("rate_limit") or {}).get(k) for k in ("primary_window", "secondary_window")):
+        window = CODEX_WINDOWS.get((w or {}).get("limit_window_seconds"))
+        if window:
+            found[window] = (float(w["used_percent"]), w.get("reset_at") or 0)
+    return found
+
+
+FETCH = {"claude": fetch_claude, "codex": fetch_codex}
+failing = set()
+
+
+def store(engine, found):
+    snapshot = _load(global_path())
+    shared = snapshot.setdefault(engine, {})
+    for window, (percent, resets) in found.items():
+        shared[window] = {"percent": percent, "resets_at": resets, "seen": time.time()}
+    _save(global_path(), snapshot)
+
+
+def refresh(engine):
+    """Обновить общий снимок с сервера подписки; False — не получилось."""
+    try:
+        found = FETCH[engine]()
+    except Exception as e:
+        if engine not in failing:  # одна запись на полосу неудач, а не каждые две минуты
+            log.warning("usage %s: %s", engine, e)
+        failing.add(engine)
+        return False
+    failing.discard(engine)
+    if found:
+        store(engine, found)
+    return True
+
+
+async def poll(engines):
+    while REFRESH > 0:
+        for engine in engines:
+            await asyncio.to_thread(refresh, engine)
+        await asyncio.sleep(REFRESH)
+
+
 def same_window(a, b):
     # Время сброса у окна фиксировано; небольшой допуск на округление.
     return abs((a or 0) - (b or 0)) < 600
 
 
-def tally(uid, engine, points, started):
+def tally(uid, engine, points, started, base=None):
     """(новый расход пользователя, новый общий снимок) после запуска; ничего не пишет.
 
-    points — события limits запуска в порядке поступления.
+    points — события limits запуска в порядке поступления; base — общий снимок на момент
+    старта (опрос посреди запуска уже включает часть его расхода и базой быть не может).
     """
     snapshot, mine = _load(global_path()), _load(user_path(uid))
     shared, own = snapshot.setdefault(engine, {}), mine.setdefault(engine, {})
+    before = shared if base is None else (base.get(engine) or {})
     for window in core.WINDOWS:
         seen = [p for p in points if p["window"] == window]
         if not seen:
             continue
         last = seen[-1]
-        prev = shared.get(window)
+        prev = before.get(window)
         if prev and same_window(prev["resets_at"], last["resets_at"]) and started - prev["seen"] < FRESH:
             base = prev["percent"]
         elif same_window(seen[0]["resets_at"], last["resets_at"]):
@@ -75,8 +156,8 @@ def tally(uid, engine, points, started):
     return mine, snapshot
 
 
-def charge(uid, engine, points, started, tokens=(0, 0)):
-    mine, snapshot = tally(uid, engine, points, started)
+def charge(uid, engine, points, started, tokens=(0, 0), base=None):
+    mine, snapshot = tally(uid, engine, points, started, base)
     totals = mine[engine].setdefault("tokens", {"in": 0, "out": 0})
     totals["in"] += tokens[0]
     totals["out"] += tokens[1]
@@ -145,10 +226,10 @@ def over(state):
     return None
 
 
-def check(uid, engine, data, points=(), started=0):
+def check(uid, engine, data, points=(), started=0, base=None):
     """Превышен ли лимит; с points — с учётом ещё не списанного текущего запуска."""
     if points:
-        mine, snapshot = tally(uid, engine, list(points), started)
+        mine, snapshot = tally(uid, engine, list(points), started, base)
     else:
         mine, snapshot = _load(user_path(uid)), _load(global_path())
     return over(windows(mine, snapshot, engine, users.engine_conf(data, engine)))
