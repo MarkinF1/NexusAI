@@ -665,15 +665,20 @@ function actionButton(icon, title, onclick) {
   return b;
 }
 
-// «Изменить» и «Повторить» — у последнего запроса, «Повторить» — и под последним ответом.
+// «Изменить» — у последнего запроса, «Ответить заново» — под последним ответом.
 function markLast() {
-  $("#feed").querySelectorAll(".msg-actions .i-edit, .msg-actions .i-retry").forEach((b) => b.remove());
+  $("#feed").querySelectorAll(".msg-actions .i-edit, .msg-actions .i-retry, .msg-actions.retry-only")
+    .forEach((b) => b.remove());
   const locked = !current || (!!current.tg && !current.tg.moved);
   if (running || locked || !lastAsk?.bar?.isConnected) return;
-  lastAsk.bar.append(actionButton("i-edit", "Изменить запрос", startEdit),
-    actionButton("i-retry", "Повторить запрос", () => retry()));
-  const answer = [...$("#feed").querySelectorAll(":scope > .msg-actions")].pop();
-  if (answer && answer !== lastAsk.bar) answer.append(actionButton("i-retry", "Ответить заново", () => retry()));
+  lastAsk.bar.append(actionButton("i-edit", "Изменить запрос", startEdit));
+  let answer = [...$("#feed").querySelectorAll(":scope > .msg-actions")].pop();
+  if (!answer || answer === lastAsk.bar) {
+    // Ответа с текстом нет (ошибка, остановка) — своя строка с кнопкой в конце хода.
+    answer = el("div", "msg-actions retry-only");
+    $("#feed").insertBefore(answer, $("#feed > .thinking"));
+  }
+  answer.append(actionButton("i-retry", "Ответить заново", () => retry()));
 }
 
 async function retry(text) {
