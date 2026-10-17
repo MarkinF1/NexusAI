@@ -213,7 +213,8 @@ class Library(unittest.TestCase):
         core.finish(31, chat, True)
         self.assertTrue(app.get_file(chat, "files/general/ok.txt", owner))
         ok = os.path.join(cwd, "files", "general", "ok.txt")
-        self.assertEqual(app.list_files(chat, owner), [{"path": "files/general/ok.txt", "size": os.path.getsize(ok)}])
+        self.assertEqual(app.list_files(chat, owner),
+                         [{"path": "files/general/ok.txt", "size": os.path.getsize(ok), "mtime": os.path.getmtime(ok)}])
         # Чужая жёсткая ссылка (не из библиотеки) не отдаётся и не показывается.
         outside = os.path.join(TMP, "secret")
         with open(outside, "w") as f:
@@ -222,8 +223,19 @@ class Library(unittest.TestCase):
         with self.assertRaises(HTTPException):
             app.get_file(chat, "files/general/secret", owner)
         ok = os.path.join(cwd, "files", "general", "ok.txt")
-        self.assertEqual(app.list_files(chat, owner), [{"path": "files/general/ok.txt", "size": os.path.getsize(ok)}])
+        self.assertEqual(app.list_files(chat, owner),
+                         [{"path": "files/general/ok.txt", "size": os.path.getsize(ok), "mtime": os.path.getmtime(ok)}])
 
+
+    def test_files_newest_first(self):
+        owner = {"id": 38, "is_admin": False}
+        chat = core.create_chat(38, "claude", "sonnet")["id"]
+        cwd = core.workspace(38, chat)
+        for i, (folder, name) in enumerate([("from_user", "b-old.txt"), ("general", "z-mid.txt"), ("for_user", "a-new.txt")]):
+            self.put(cwd, folder, name)
+            os.utime(os.path.join(cwd, "files", folder, name), (1000 + i, 1000 + i))
+        self.assertEqual([f["path"] for f in app.list_files(chat, owner)],
+                         ["files/for_user/a-new.txt", "files/general/z-mid.txt", "files/from_user/b-old.txt"])
 
     def test_delete_files(self):
         owner = {"id": 36, "is_admin": False}
