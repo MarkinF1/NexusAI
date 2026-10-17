@@ -7,8 +7,10 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 import uvicorn
@@ -20,12 +22,20 @@ from pydantic import BaseModel
 import core
 import jobs
 import session_files
+import stt
 import tg
 import usage
 import users
 
+log = logging.getLogger("nexus.web")
+
 COOKIE = "nexus"
 MAX_UPLOAD = 50 * 1024 * 1024
+MAX_VOICE = 20 * 1024 * 1024
+MAX_VOICE_SECONDS = 10 * 60
+VOICE_TYPES = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/aac": "aac",
+               "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-wav": "wav"}
+VOICE_ID = re.compile(r"[0-9a-f]{32}")
 LOCK_AFTER, LOCK_FOR = 5, 15 * 60
 
 TG_TOKEN = os.environ.get("NEXUS_TG_TOKEN", "")
@@ -93,6 +103,8 @@ def in_tg(meta):
 def idle(user, chat):
     if (user["id"], chat) in jobs.jobs:
         raise HTTPException(409, "Дождитесь ответа или остановите его")
+    if jobs.transcribing[(user["id"], chat)]:
+        raise HTTPException(409, "Дождитесь расшифровки голосового")
 
 
 # --- Вход ---
@@ -196,7 +208,8 @@ def new_chat(body: NewChat, user=Depends(current_user)):
 @app.get("/api/chats/{chat}")
 def get_chat(chat: str, user=Depends(current_user)):
     return {"chat": own_chat(user, chat), "history": core.history(user["id"], chat),
-            "running": (user["id"], chat) in jobs.jobs}
+            "running": (user["id"], chat) in jobs.jobs,
+            "transcribing": jobs.transcribing[(user["id"], chat)] > 0}
 
 
 class ChatChange(BaseModel):
@@ -250,7 +263,8 @@ def delete_chat(chat: str, files: bool = False, user=Depends(current_user)):
 
 @app.post("/api/chats/{chat}/messages")
 async def send(chat: str, text: str = Form(""), files: list[UploadFile] = File([]),
-               user=Depends(current_user)):
+               user=Depends(current_user), voice: str = Form("")):
+    """voice — голосовое, расшифровку которого пользователь подтвердил: текст уходит от него."""
     meta = own_chat(user, chat)
     idle(user, chat)
     in_tg(meta)
@@ -271,8 +285,91 @@ async def send(chat: str, text: str = Form(""), files: list[UploadFile] = File([
         saved.append(target.name)
         if upload.content_type in jobs.IMAGE_TYPES and target.stat().st_size <= core.MAX_IMAGE:
             images.append((target.read_bytes(), upload.content_type))
+    if isinstance(voice, str) and VOICE_ID.fullmatch(voice):  # прямой вызов: там объект Form
+        # До jobs.start без await: ответ «да» и реплика встают в журнал подряд.
+        core.append_history(user["id"], chat, {"kind": "voice_answer", "voice": voice, "ok": True})
     # От idle() до jobs.start нет ни одного await: второй запрос не займёт беседу между ними.
     await jobs.start(user["id"], meta, text, data, saved, images)
+    return {}
+
+
+def voice_peaks(raw):
+    """Уровни громкости для дорожки: до 64 чисел 0..1, посчитаны браузером при записи."""
+    try:
+        peaks = json.loads(raw or "[]")
+        return [round(min(max(float(p), 0.0), 1.0), 3) for p in peaks[:64]]
+    except (ValueError, TypeError):
+        return []
+
+
+@app.post("/api/chats/{chat}/voice")
+async def voice(chat: str, audio: UploadFile = File(...), duration: float = Form(...), peaks: str = Form(""),
+                user=Depends(current_user)):
+    """Голосовое: сохраняется, встаёт в журнал и сразу расшифровывается.
+    Возвращает новые события журнала — голосовое и расшифровку или ошибку."""
+    meta = own_chat(user, chat)
+    idle(user, chat)
+    in_tg(meta)
+    if not 0 < duration <= MAX_VOICE_SECONDS:
+        raise HTTPException(400, f"Голосовое должно быть до {MAX_VOICE_SECONDS // 60} минут")
+    data = await upload_bytes(audio, MAX_VOICE)
+    ext = VOICE_TYPES.get((audio.content_type or "").split(";")[0].strip(), "webm")
+    vid = uuid.uuid4().hex
+    folder = session_files.directory(core.voice_dir(user["id"], chat))
+    (Path(folder) / f"{vid}.{ext}").write_bytes(data)
+    key = (user["id"], chat)
+    added = [{"kind": "voice", "id": vid, "ext": ext, "duration": round(duration, 2),
+              "peaks": voice_peaks(peaks), "ts": time.time()}]
+    core.append_history(*key, added[0])
+    jobs.transcribing[key] += 1
+    try:
+        text = await stt.transcribe(data)
+        added.append({"kind": "transcript", "voice": vid, "text": text} if text else
+                     {"kind": "warning", "text": "В голосовом не удалось разобрать речь"})
+    except Exception as e:  # битый файл, нет модели, не хватило памяти — беседа не должна встать
+        log.exception("расшифровка голосового")
+        added.append({"kind": "warning", "text": f"Не удалось расшифровать голосовое: {e}"})
+    finally:
+        jobs.transcribing[key] -= 1
+        if not jobs.transcribing[key]:
+            del jobs.transcribing[key]
+    core.append_history(*key, added[1])
+    return {"events": added}
+
+
+async def upload_bytes(upload, limit):
+    if upload.size is not None and upload.size > limit:
+        raise HTTPException(413, f"Больше {limit // 2 ** 20} МБ")
+    data = await upload.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"Больше {limit // 2 ** 20} МБ")
+    if not data:
+        raise HTTPException(400, "Пустая запись")
+    return data
+
+
+@app.get("/api/chats/{chat}/voice/{vid}")
+def voice_file(chat: str, vid: str, user=Depends(current_user)):
+    own_chat(user, chat)
+    if not VOICE_ID.fullmatch(vid):
+        raise HTTPException(404, "Нет такого голосового")
+    for ext in set(VOICE_TYPES.values()):
+        path = Path(core.voice_dir(user["id"], chat)) / f"{vid}.{ext}"
+        if path.is_file():
+            # FileResponse отвечает и на Range: без этого Safari не играет звук.
+            media = next(t for t, e in VOICE_TYPES.items() if e == ext)
+            return FileResponse(path, media_type=media)
+    raise HTTPException(404, "Нет такого голосового")
+
+
+@app.post("/api/chats/{chat}/voice/{vid}/decline")
+def voice_decline(chat: str, vid: str, user=Depends(current_user)):
+    """«Нет» под расшифровкой: кнопки убираются, текст остаётся в ленте."""
+    own_chat(user, chat)
+    idle(user, chat)
+    if not VOICE_ID.fullmatch(vid):
+        raise HTTPException(404, "Нет такого голосового")
+    core.append_history(user["id"], chat, {"kind": "voice_answer", "voice": vid, "ok": False})
     return {}
 
 

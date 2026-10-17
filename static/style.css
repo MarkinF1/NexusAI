@@ -248,6 +248,68 @@ a.chip:hover { border-color: var(--engine); }
 #send { flex: none; width: 38px; height: 38px; padding: 0; border-radius: 10px; display: grid; place-items: center; }
 #send svg { width: 20px; height: 20px; fill: currentColor; }
 #send.stop { background: none; color: var(--ink); border-color: var(--line); }
+/* --- Голосовые --- */
+/* Удержание микрофона: без прокрутки, выделения и меню iOS */
+#send[data-mode="mic"] { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#rec { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 38px; padding: 0 6px; }
+#rec[hidden] { display: none; }
+.rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #d63a2f; animation: pulse 1s ease-in-out infinite; }
+#rec-time { flex: none; min-width: 3.2em; font: 500 15px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.rec-hint {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 2px; min-width: 0;
+  color: var(--muted); font-size: 14px; white-space: nowrap; opacity: var(--fade, 1); animation: nudge 1.4s ease-in-out infinite;
+}
+.rec-hint svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+@keyframes nudge { 50% { transform: translateX(-4px); } }
+#composer.recording #text, #composer.recording .attach { display: none; }
+/* Во время записи кнопка — большой круг под пальцем; scale и translate отдельно, чтобы тянулась без задержки */
+#send { transition: scale .15s, border-radius .15s, box-shadow .15s; }
+#composer.recording #send {
+  /* Круг растёт к центру; сдвиг вверх-влево не даёт ему уйти за край экрана */
+  position: relative; z-index: 2; border-radius: 50%; scale: 1.8; translate: calc(var(--drag, 0px) - 14px) -14px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--engine) 22%, transparent);
+}
+
+.msg-voice { display: flex; align-items: center; gap: 10px; white-space: normal; }
+.voice-play {
+  flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: var(--engine); color: var(--on-engine); cursor: pointer;
+}
+.voice-play:hover { filter: brightness(1.08); }
+.voice-play svg { width: 16px; height: 16px; fill: currentColor; }
+.voice-wave { --played: 0%; position: relative; flex: 1; min-width: 0; max-width: 320px; height: 30px; }
+.voice-bars { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; }
+.voice-bars span { flex: 1; min-width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 40%, transparent); }
+/* Цветной слой поверх серого, открыт до текущей секунды */
+.voice-bars.played { clip-path: inset(0 calc(100% - var(--played)) 0 0); }
+.voice-bars.played span { background: var(--engine); }
+.voice-time { flex: none; min-width: 3em; text-align: right; color: var(--muted); font: 400 12.5px/1 var(--mono); font-variant-numeric: tabular-nums; }
+
+.msg-transcribing { display: flex; align-items: center; gap: 10px; font-size: 14.5px; }
+.msg-transcribing::after { left: 5px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--engine); animation: pulse 1.4s ease-in-out infinite; }
+.eq { display: inline-flex; align-items: center; gap: 2px; height: 16px; }
+.eq span { width: 3px; height: 100%; border-radius: 2px; background: var(--engine); animation: eq 1s ease-in-out infinite; }
+.eq span:nth-child(2) { animation-delay: -.8s; }
+.eq span:nth-child(3) { animation-delay: -.6s; }
+.eq span:nth-child(4) { animation-delay: -.4s; }
+.eq span:nth-child(5) { animation-delay: -.2s; }
+@keyframes eq { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+.shimmer {
+  background: linear-gradient(90deg, var(--muted) 30%, var(--ink) 50%, var(--muted) 70%) 0 0 / 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.8s linear infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+.transcript-label { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; color: var(--muted); font-size: 12.5px; }
+.transcript-label svg { width: 14px; height: 14px; fill: currentColor; }
+.transcript-text {
+  padding: 10px 14px; border: 1px solid var(--line); border-left: 3px solid var(--engine); border-radius: 10px;
+  background: var(--raised); white-space: pre-wrap; font-size: 15.5px; line-height: 1.5;
+}
+.transcript-ask { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 14px; }
+.transcript-ask span { margin-right: auto; }
+.transcript-ask button { padding: 6px 18px; }
+
 .banner { color: var(--error); border: 1px solid currentColor; border-radius: 10px; padding: 8px 12px; margin-bottom: 8px !important; font-size: 13.5px; }
 
 #scrim { display: none; }
@@ -414,7 +476,7 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   .msg-user { padding-left: 40px !important; }
   .msg-user::before { left: 26px; }
   .msg-user::after { left: 2px; }
-  .msg-error::after, .thinking::after { left: 3px; }
+  .msg-error::after, .thinking::after, .msg-transcribing::after { left: 3px; }
   .msg-tool::after { left: 1px; }
   .empty h2 { font-size: 24px; }
   #composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }

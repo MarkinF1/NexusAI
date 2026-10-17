@@ -197,6 +197,12 @@ def history(uid, chat):
     return events
 
 
+def voice_dir(uid, chat):
+    """Голосовые беседы с сайта. Вне папки данных: модели и библиотеке они не нужны."""
+    chat_file(uid, chat, "")  # проверка id: он идёт в путь
+    return os.path.join(user_dir(uid), "voice", chat)
+
+
 def delete_chat(uid, meta, files=True):
     """files — удалить и файлы беседы из библиотеки. Иначе они остаются там, включая
     ещё не обработанные вложения и неотданные файлы модели."""
@@ -210,6 +216,7 @@ def delete_chat(uid, meta, files=True):
                 session_files.archive(root, folder)
             shelve(uid, chat)
     shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(voice_dir(uid, chat), ignore_errors=True)
     if meta["engine"] == "claude":
         for path in glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl")):
             os.remove(path)

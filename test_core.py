@@ -276,6 +276,73 @@ class Library(unittest.TestCase):
         with self.assertRaises(HTTPException):
             app.delete_file(a, "files/general/x", {"id": 37, "is_admin": False})  # чужая беседа
 
+
+class Voice(unittest.TestCase):
+    def upload(self, body=b"OggS-voice", mime="audio/webm;codecs=opus"):
+        import io
+        from starlette.datastructures import Headers, UploadFile
+        return UploadFile(io.BytesIO(body), size=len(body), filename="voice.webm", headers=Headers({"content-type": mime}))
+
+    def test_voice_flow(self):
+        owner = {"id": 40, "is_admin": False}
+        meta = core.create_chat(40, "claude", "sonnet")
+        chat = meta["id"]
+        with unittest.mock.patch("stt.transcribe", unittest.mock.AsyncMock(return_value="Привет, проверь логи")):
+            out = asyncio.run(app.voice(chat, self.upload(), 3.456, "[0.1, 2, -1, \"x\"]", owner))
+        voice, transcript = out["events"]
+        self.assertEqual((voice["kind"], voice["ext"], voice["duration"]), ("voice", "webm", 3.46))
+        self.assertEqual(voice["peaks"], [])  # мусор в уровнях — дорожка без них, а не ошибка
+        self.assertEqual(transcript, {"kind": "transcript", "voice": voice["id"], "text": "Привет, проверь логи"})
+        self.assertEqual([e["kind"] for e in core.history(40, chat)], ["voice", "transcript"])
+        self.assertEqual(app.voice_file(chat, voice["id"], owner).media_type, "audio/webm")
+        for bad in ("../x", "0" * 31, "g" * 32, "0" * 32):
+            with self.assertRaises(HTTPException, msg=bad):
+                app.voice_file(chat, bad, owner)
+        with self.assertRaises(HTTPException):
+            app.voice_file(chat, voice["id"], {"id": 41, "is_admin": False})  # чужая беседа
+        # «Нет» — кнопки убираются; «да» — ответ и реплика встают в журнал подряд.
+        app.voice_decline(chat, voice["id"], owner)
+        with unittest.mock.patch("jobs.check", return_value={}), \
+                unittest.mock.patch("jobs.start", unittest.mock.AsyncMock()) as start:
+            asyncio.run(app.send(chat, "Привет, проверь логи", [], owner, voice=voice["id"]))
+        start.assert_awaited_once()
+        self.assertEqual(core.history(40, chat)[-2:], [
+            {"kind": "voice_answer", "voice": voice["id"], "ok": False},
+            {"kind": "voice_answer", "voice": voice["id"], "ok": True}])
+        folder = core.voice_dir(40, chat)
+        self.assertTrue(os.listdir(folder))
+        core.delete_chat(40, core.load_chat(40, chat))
+        self.assertFalse(os.path.exists(folder))
+
+    def test_voice_errors(self):
+        owner = {"id": 42, "is_admin": False}
+        chat = core.create_chat(42, "claude", "sonnet")["id"]
+        with unittest.mock.patch("stt.transcribe", unittest.mock.AsyncMock(return_value="")):
+            out = asyncio.run(app.voice(chat, self.upload(mime="audio/mp4"), 1.0, "[0.5]", owner))
+        self.assertEqual(out["events"][0]["ext"], "m4a")
+        self.assertEqual(out["events"][1]["kind"], "warning")
+        with unittest.mock.patch("stt.transcribe", unittest.mock.AsyncMock(side_effect=RuntimeError("нет модели"))):
+            out = asyncio.run(app.voice(chat, self.upload(), 1.0, "", owner))
+        self.assertIn("нет модели", out["events"][1]["text"])
+        self.assertNotIn((42, chat), jobs.transcribing)  # счётчик сброшен и после ошибки
+        for duration in (0, -1, app.MAX_VOICE_SECONDS + 1):
+            with self.assertRaises(HTTPException):
+                asyncio.run(app.voice(chat, self.upload(), duration, "", owner))
+        with self.assertRaises(HTTPException):
+            asyncio.run(app.voice(chat, self.upload(b""), 1.0, "", owner))
+        with unittest.mock.patch("app.MAX_VOICE", 4), self.assertRaises(HTTPException):
+            asyncio.run(app.voice(chat, self.upload(b"12345"), 1.0, "", owner))
+        # Пока идёт расшифровка, беседа занята: ни реплики, ни второго голосового.
+        jobs.transcribing[(42, chat)] += 1
+        try:
+            with self.assertRaises(HTTPException):
+                app.voice_decline(chat, "0" * 32, owner)
+            with self.assertRaises(HTTPException):
+                asyncio.run(app.voice(chat, self.upload(), 1.0, "", owner))
+        finally:
+            del jobs.transcribing[(42, chat)]
+        self.assertFalse(app.get_chat(chat, owner)["transcribing"])
+
 class Access(unittest.TestCase):
     def test_paths(self):
         owner, stranger = {"id": 7, "is_admin": False}, {"id": 8, "is_admin": False}

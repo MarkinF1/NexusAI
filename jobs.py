@@ -105,6 +105,9 @@ def room(uid, data, incoming):
                                "или попросите администратора увеличить лимит.")
 
 
+transcribing = collections.Counter()  # (uid, chat) -> сколько голосовых сейчас расшифровывается
+
+
 async def start(uid, meta, text, data, saved=(), images=(), channel="web"):
     """Запуск ответа. saved — имена уже сохранённых в files/from_user вложений."""
     key = (uid, meta["id"])

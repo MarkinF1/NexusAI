@@ -27,6 +27,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 import core
 import jobs
+import stt
 import session_files
 import users
 
@@ -36,8 +37,6 @@ MAX_DOWNLOAD = 20 * 1024 * 1024  # больше Bot API скачать не да
 MAX_UPLOAD = 50 * 1024 * 1024
 ALBUM_WAIT = 1.5  # альбом приходит пачкой сообщений, ждём остальные
 CODE_TTL = 10 * 60
-STT_MODEL = os.environ.get("NEXUS_TG_STT_MODEL", "small")
-STT_LANG = os.environ.get("NEXUS_TG_STT_LANG") or None  # пусто — определять само
 MARKS = {"claude": "🟠", "codex": "🟢"}
 LINK_HINT = "Привяжите Telegram на сайте: «Настройки» → «Привязать Telegram»."
 MOVED = "Эта беседа перенесена на сайт: продолжайте её там. /new — начать новую здесь."
@@ -58,8 +57,6 @@ locks = defaultdict(asyncio.Lock)
 # и отдаём модели одним запросом, когда поток сообщений прекратился.
 albums = defaultdict(list)
 album_deadline = {}
-stt = None  # модель распознавания грузится при первом голосовом
-stt_lock = asyncio.Lock()
 
 
 # --- Привязка и уведомления ---
@@ -527,17 +524,6 @@ async def on_effort_pick(call: CallbackQuery, who, owner):
 
 # --- Сообщения ---
 
-def transcribe(data):
-    """Расшифровка голосового. Локально, на CPU; блокирующая — только из потока."""
-    global stt
-    if stt is None:
-        from faster_whisper import WhisperModel  # ~1 ГБ памяти, грузим по факту
-        log.info("загружаю модель распознавания %s", STT_MODEL)
-        stt = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
-    segments, _ = stt.transcribe(io.BytesIO(data), language=STT_LANG, vad_filter=True)
-    return " ".join(s.text.strip() for s in segments).strip()
-
-
 async def transcribe_attachment(message):
     """Аудио существует только в памяти и не попадает в файлы беседы."""
     source = message.voice or message.audio
@@ -545,8 +531,7 @@ async def transcribe_attachment(message):
         raise ValueError(f"Аудио больше {jobs.human(MAX_DOWNLOAD)} — его не скачать.")
     with io.BytesIO() as buffer:
         await message.bot.download(source, destination=buffer)
-        async with stt_lock:
-            return await asyncio.to_thread(transcribe, buffer.getvalue())
+        return await stt.transcribe(buffer.getvalue())
 
 
 async def download_attachment(uid, message, cwd):

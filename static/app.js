@@ -102,7 +102,8 @@ $("#login").onsubmit = async (e) => {
   }
 };
 
-$("#logout").onclick = async () => { await api("/api/logout", { method: "POST" }); location.reload(); };
+$("#logout").onclick = async () => {
+  pauseVoice(); await api("/api/logout", { method: "POST" }); location.reload(); };
 
 $("#passwd").onclick = async () => {
   const password = prompt("Новый пароль");
@@ -251,6 +252,7 @@ async function newChat(engine) {
 document.addEventListener("click", () => { $("#add-menu").hidden = true; });
 
 async function openChat(id) {
+  pauseVoice();
   stream?.close();
   stream = null;
   let data;
@@ -259,10 +261,19 @@ async function openChat(id) {
   history.replaceState(null, "", "#" + id);
   side(false);
   $("#feed").replaceChildren();
+  feedGen++;
   count = 0;
   turn = [];
   data.history.forEach(render);
   count = data.history.length;
+  // Голосовое расшифровывается, а запрос ушёл из другой вкладки или до перезагрузки:
+  // показываем ожидание и перечитываем беседу, пока расшифровка не появится.
+  waiting = data.transcribing && !transcribing.has(id);
+  if (waiting) {
+    $("#feed").append(transcribingNode());
+    const gen = feedGen;
+    setTimeout(() => { if (current?.id === id && feedGen === gen) openChat(id); }, 2500);
+  }
   showHeader();
   const inTg = !!current.tg && !current.tg.moved;
   $("#composer").hidden = inTg;
@@ -483,6 +494,16 @@ function render(ev) {
     node = el("div", "msg-error", "Ошибка: " + ev.text);
   } else if (ev.kind === "stopped") {
     node = el("div", "msg-note", "Остановлено");
+  } else if (ev.kind === "voice") {
+    endTurn();
+    node = voiceNode(ev, `/api/chats/${current.id}/voice/${ev.id}`);
+  } else if (ev.kind === "transcript") {
+    node = transcriptNode(ev);
+  } else if (ev.kind === "voice_answer") {
+    // «Да» — текст ушёл репликой пользователя; «нет» — убираем только вопрос и кнопки.
+    const asked = feed.querySelector(`.msg-transcript[data-voice="${ev.voice}"]`);
+    if (ev.ok) asked?.remove();
+    else asked?.querySelector(".transcript-ask")?.remove();
   } else if (ev.kind === "done" && ev.files?.length) {
     node = el("div", "chips");
     ev.files.forEach((p) => node.append(fileLink(p)));
@@ -492,13 +513,28 @@ function render(ev) {
   if (ev.kind === "done") endTurn();
 }
 
+// Кнопка справа: «стоп» во время ответа, самолётик при тексте в поле, иначе микрофон.
+const SEND = {
+  stop: ["#i-stop", "Остановить"],
+  send: ["#i-send", "Отправить"],
+  mic: ["#i-mic", "Удерживайте, чтобы записать голосовое"],
+};
+
+function updateSend() {
+  const send = $("#send");
+  const mode = running ? "stop" : $("#text").value.trim() ? "send" : "mic";
+  send.dataset.mode = mode;
+  send.querySelector("use").setAttribute("href", SEND[mode][0]);
+  send.title = SEND[mode][1];
+  send.setAttribute("aria-label", send.title);
+  send.classList.toggle("stop", mode === "stop");
+  // Пока расшифровывается голосовое, беседа занята: ни текста, ни новой записи.
+  send.disabled = mode !== "stop" && !!current && (transcribing.has(current.id) || waiting);
+}
+
 function setRunning(on) {
   running = on;
-  const send = $("#send");
-  send.querySelector("use").setAttribute("href", on ? "#i-stop" : "#i-send");
-  send.title = on ? "Остановить" : "Отправить";
-  send.setAttribute("aria-label", send.title);
-  send.classList.toggle("stop", on);
+  updateSend();
   $("#feed > .thinking")?.remove();
   if (on) $("#feed").append(el("div", "thinking"));
 }
@@ -554,6 +590,7 @@ $("#text").addEventListener("paste", (e) => {
 $("#text").addEventListener("input", (e) => {
   e.target.style.height = "auto";
   e.target.style.height = e.target.scrollHeight + 2 + "px";
+  updateSend();
 });
 
 $("#text").addEventListener("keydown", (e) => {
@@ -571,25 +608,343 @@ $("#composer").onsubmit = async (e) => {
   }
   const text = $("#text").value;
   if (!text.trim()) return;
-  const body = new FormData();
-  body.append("text", text);
-  attachments.forEach((f) => body.append("files", f, f.name));
   $("#send").disabled = true;
   try {
-    await api(`/api/chats/${current.id}/messages`, { method: "POST", body });
+    await sendMessage(text, attachments);
     $("#text").value = "";
     $("#text").style.height = "auto";
     attachments = [];
     showAttachments();
-    setRunning(true);
-    follow();
-    scrollDown(true);
   } catch (err) {
     alert(err.message);
   } finally {
-    $("#send").disabled = false;
+    updateSend();
   }
 };
+
+// voice — голосовое, расшифровку которого подтвердили: сервер отметит ответ «да».
+async function sendMessage(text, files, voice) {
+  const body = new FormData();
+  body.append("text", text);
+  files.forEach((f) => body.append("files", f, f.name));
+  if (voice) body.append("voice", voice);
+  await api(`/api/chats/${current.id}/messages`, { method: "POST", body });
+  setRunning(true);
+  follow();
+  scrollDown(true);
+}
+
+// --- Голосовые: запись ---
+
+const VOICE_LIMIT = 5 * 60;  // секунд; дальше запись отправляется сама
+const transcribing = new Set();  // беседы, где эта вкладка ждёт расшифровку
+let waiting = false;  // в открытой беседе расшифровка идёт по чужому запросу
+let rec = null;  // идущая запись
+let feedGen = 0;  // растёт при каждой перерисовке ленты
+
+function clock(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function micHint() {
+  const text = $("#text");
+  text.placeholder = "Удерживайте микрофон, чтобы записать голосовое";
+  clearTimeout(micHint.timer);
+  micHint.timer = setTimeout(() => { text.placeholder = "Сообщение"; }, 2500);
+}
+
+const sendButton = $("#send");
+sendButton.addEventListener("contextmenu", (e) => { if (sendButton.dataset.mode === "mic") e.preventDefault(); });
+// Нажатие на микрофон не отправляет форму: запись — удержанием.
+sendButton.addEventListener("click", (e) => { if (sendButton.dataset.mode === "mic") e.preventDefault(); });
+sendButton.addEventListener("pointerdown", (e) => {
+  if (sendButton.dataset.mode !== "mic" || sendButton.disabled || rec || e.button > 0) return;
+  e.preventDefault();
+  startRecording(e);
+});
+sendButton.addEventListener("pointermove", (e) => {
+  const r = rec;
+  if (!r || e.pointerId !== r.pointer || !r.recorder) return;
+  // Палец уходит влево — кнопка едет за ним, подсказка гаснет; дальше порога — отмена.
+  const dx = Math.min(0, e.clientX - r.x);
+  const limit = Math.min(120, $("#composer .row").clientWidth / 3);
+  sendButton.style.setProperty("--drag", dx + "px");
+  $("#rec").style.setProperty("--fade", String(1 - Math.min(1, -dx / limit)));
+  if (-dx > limit) finishRecording(false);
+});
+sendButton.addEventListener("pointerup", (e) => { if (rec && e.pointerId === rec.pointer) finishRecording(true); });
+sendButton.addEventListener("pointercancel", (e) => { if (rec && e.pointerId === rec.pointer) finishRecording(false); });
+
+async function startRecording(e) {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    alert(window.isSecureContext ? "Этот браузер не умеет записывать звук"
+      : "Запись голоса браузер разрешает только по https или на localhost");
+    return;
+  }
+  const r = rec = { pointer: e.pointerId, x: e.clientX, held: true, chunks: [], levels: [] };
+  try { sendButton.setPointerCapture(e.pointerId); } catch {}
+  // AudioContext — сразу в жесте: созданный после await iOS держит на паузе.
+  const Context = window.AudioContext || window.webkitAudioContext;
+  r.ctx = Context ? new Context() : null;
+  try {
+    r.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (err) {
+    r.ctx?.close().catch(() => {});
+    if (rec === r) rec = null;
+    alert(err.name === "NotAllowedError" ? "Нет доступа к микрофону: разрешите его в настройках браузера"
+      : "Микрофон недоступен: " + err.message);
+    return;
+  }
+  if (!r.held) {  // отпустили, пока браузер спрашивал разрешение: в следующий раз запишется сразу
+    stopTracks(r);
+    return;
+  }
+  const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+    .find((t) => MediaRecorder.isTypeSupported(t));
+  r.recorder = new MediaRecorder(r.stream, type ? { mimeType: type } : undefined);
+  r.recorder.ondataavailable = (ev) => { if (ev.data.size) r.chunks.push(ev.data); };
+  r.recorder.start(250);
+  if (r.ctx) {
+    r.ctx.resume?.();
+    r.analyser = r.ctx.createAnalyser();
+    r.analyser.fftSize = 1024;
+    r.ctx.createMediaStreamSource(r.stream).connect(r.analyser);
+    r.samples = new Float32Array(r.analyser.fftSize);
+  }
+  r.started = performance.now();
+  $("#composer").classList.add("recording");
+  $("#rec").hidden = false;
+  $("#rec-time").textContent = "0:00";
+  navigator.vibrate?.(15);
+  tick(r);
+}
+
+function tick(r) {
+  if (rec !== r) return;
+  const t = (performance.now() - r.started) / 1000;
+  $("#rec-time").textContent = clock(t);
+  if (r.analyser) {  // громкость для дорожки голосового
+    r.analyser.getFloatTimeDomainData(r.samples);
+    let sum = 0;
+    for (const v of r.samples) sum += v * v;
+    r.levels.push(Math.sqrt(sum / r.samples.length));
+  }
+  if (t >= VOICE_LIMIT) return finishRecording(true);
+  r.frame = requestAnimationFrame(() => tick(r));
+}
+
+function stopTracks(r) {
+  r.stream?.getTracks().forEach((t) => t.stop());
+  r.ctx?.close().catch(() => {});
+}
+
+// ok — отпустили кнопку: отправить; иначе отмена.
+function finishRecording(ok) {
+  const r = rec;
+  if (!r) return;
+  rec = null;
+  r.held = false;
+  cancelAnimationFrame(r.frame);
+  $("#composer").classList.remove("recording");
+  $("#rec").hidden = true;
+  sendButton.style.removeProperty("--drag");
+  $("#rec").style.removeProperty("--fade");
+  if (!r.recorder) {  // разрешение ещё не дали: дорогу освободит startRecording
+    if (ok) micHint();
+    return;
+  }
+  const duration = (performance.now() - r.started) / 1000;
+  if (ok && duration < 0.6) micHint();
+  r.recorder.onstop = () => {
+    stopTracks(r);
+    if (ok && duration >= 0.6 && r.chunks.length) {
+      uploadVoice(new Blob(r.chunks, { type: r.recorder.mimeType || "audio/webm" }), duration, peaksOf(r.levels));
+    }
+  };
+  r.recorder.stop();
+}
+
+// Громкость по кадрам — в 48 столбиков дорожки, самый громкий = 1.
+function peaksOf(levels, n = 48) {
+  if (!levels.length) return [];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(i * levels.length / n);
+    const to = Math.max(Math.floor((i + 1) * levels.length / n), from + 1);
+    out.push(Math.max(...levels.slice(from, to)));
+  }
+  const top = Math.max(...out) || 1;
+  return out.map((v) => Math.round(v / top * 1000) / 1000);
+}
+
+function transcribingNode() {
+  const node = el("div", "msg-transcribing");
+  const eq = el("span", "eq");
+  for (let i = 0; i < 5; i++) eq.append(el("span"));
+  node.append(eq, el("span", "shimmer", "Расшифровываю…"));
+  return node;
+}
+
+async function uploadVoice(blob, duration, peaks) {
+  const chat = current.id, gen = feedGen;
+  const feed = $("#feed");
+  // До ответа сервера — голосовое из памяти браузера и «Расшифровываю…».
+  const local = voiceNode({ duration, peaks }, URL.createObjectURL(blob));
+  const wait = transcribingNode();
+  feed.insertBefore(local, $("#feed > .thinking"));
+  feed.insertBefore(wait, $("#feed > .thinking"));
+  scrollDown(true);
+  transcribing.add(chat);
+  updateSend();
+  const ext = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
+  const body = new FormData();
+  body.append("audio", blob, "voice." + ext);
+  body.append("duration", duration.toFixed(2));
+  body.append("peaks", JSON.stringify(peaks));
+  let events = null;
+  try {
+    ({ events } = await api(`/api/chats/${chat}/voice`, { method: "POST", body }));
+  } catch (err) {
+    alert(err.message);
+  }
+  transcribing.delete(chat);
+  if (playing?.node === local) pauseVoice();
+  URL.revokeObjectURL(local.voice.src);
+  if (current?.id !== chat) return;
+  if (feedGen !== gen) return openChat(chat);  // ленту перерисовали — берём журнал целиком
+  local.remove();
+  wait.remove();
+  if (events) {
+    events.forEach(render);
+    count += events.length;
+    scrollDown();
+  }
+  updateSend();
+}
+
+// --- Голосовые: плеер ---
+
+const positions = new Map();  // голосовое -> секунда, где остановились
+let playing = null;  // { node } — что играет сейчас
+
+function voiceNode(ev, src) {
+  const node = el("div", "msg-user msg-voice");
+  const play = el("button", "voice-play");
+  play.type = "button";
+  const wave = el("div", "voice-wave");
+  const peaks = ev.peaks?.length ? ev.peaks : Array(48).fill(0.35);
+  const bars = (cls) => {
+    const row = el("div", cls);
+    peaks.forEach((p) => {
+      const bar = el("span");
+      bar.style.height = Math.max(12, p * 100) + "%";
+      row.append(bar);
+    });
+    return row;
+  };
+  wave.append(bars("voice-bars"), bars("voice-bars played"));
+  const time = el("span", "voice-time");
+  node.append(play, wave, time);
+  node.voice = { src, key: ev.id || src, duration: ev.duration || 0, play, wave, time, audio: null };
+  voiceIcon(node, false);
+  showProgress(node, positions.get(node.voice.key) || 0);
+  play.onclick = () => (playing?.node === node ? pauseVoice() : playVoice(node));
+  return node;
+}
+
+function voiceIcon(node, on) {
+  const { play } = node.voice;
+  play.innerHTML = `<svg width="16" height="16"><use href="#i-${on ? "pause" : "play"}"/></svg>`;
+  play.title = on ? "Пауза" : "Воспроизвести";
+  play.setAttribute("aria-label", play.title);
+}
+
+// Проигранная часть дорожки — цветом, остальное серым; время — где сейчас, а до старта — длина.
+function showProgress(node, t) {
+  const v = node.voice;
+  const part = v.duration ? Math.min(1, t / v.duration) : 0;
+  v.wave.style.setProperty("--played", (part * 100).toFixed(2) + "%");
+  v.time.textContent = clock(t > 0 ? t : v.duration);
+}
+
+function playVoice(node) {
+  pauseVoice();
+  const v = node.voice;
+  if (!v.audio) {
+    // Новый элемент после перерисовки ленты: продолжаем с запомненного места.
+    const from = positions.get(v.key) || 0;
+    v.audio = new Audio(v.src + (from ? `#t=${from.toFixed(2)}` : ""));
+    v.audio.onended = () => {
+      positions.delete(v.key);
+      if (playing?.node === node) playing = null;
+      voiceIcon(node, false);
+      showProgress(node, 0);
+    };
+  }
+  playing = { node };
+  voiceIcon(node, true);
+  v.audio.play().catch((err) => {
+    if (playing?.node === node) playing = null;
+    voiceIcon(node, false);
+    if (err.name !== "AbortError") alert("Не удалось воспроизвести: " + err.message);
+  });
+  const step = () => {
+    if (playing?.node !== node) return;
+    showProgress(node, v.audio.currentTime);
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// Пауза на том же месте: при следующем «воспроизвести» звук пойдёт отсюда.
+function pauseVoice() {
+  if (!playing) return;
+  const { node } = playing;
+  const v = node.voice;
+  playing = null;
+  if (v.audio) {
+    v.audio.pause();
+    positions.set(v.key, v.audio.currentTime);
+    showProgress(node, v.audio.currentTime);
+  }
+  voiceIcon(node, false);
+}
+
+// Ушли с сайта или свернули приложение — звук на паузу.
+document.addEventListener("visibilitychange", () => { if (document.hidden) pauseVoice(); });
+window.addEventListener("pagehide", pauseVoice);
+
+function transcriptNode(ev) {
+  const node = el("div", "msg-transcript");
+  node.dataset.voice = ev.voice;
+  const label = el("div", "transcript-label");
+  label.innerHTML = '<svg width="14" height="14"><use href="#i-mic"/></svg>';
+  label.append("Расшифровка голосового");
+  const ask = el("div", "transcript-ask");
+  const yes = el("button", "primary", "Да");
+  const no = el("button", "", "Нет");
+  yes.type = no.type = "button";
+  yes.onclick = async () => {
+    yes.disabled = no.disabled = true;
+    try { await sendMessage(ev.text, [], ev.voice); } catch (err) { alert(err.message); }
+    yes.disabled = no.disabled = false;
+  };
+  no.onclick = async () => {
+    yes.disabled = no.disabled = true;
+    try {
+      await api(`/api/chats/${current.id}/voice/${ev.voice}/decline`, { method: "POST" });
+      render({ kind: "voice_answer", voice: ev.voice, ok: false });
+      count++;
+    } catch (err) {
+      alert(err.message);
+      yes.disabled = no.disabled = false;
+    }
+  };
+  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, no);
+  node.append(label, el("div", "transcript-text", ev.text), ask);
+  return node;
+}
 
 // --- Файлы беседы ---
 
@@ -1145,6 +1500,7 @@ $("#skills-open").onclick = async () => {
 };
 
 $("#settings-open").onclick = async () => {
+  pauseVoice();
   side(false);
   $("#account-name").textContent = me.name;
   $("#account-role").textContent = me.is_admin ? "Администратор" : "Участник";
