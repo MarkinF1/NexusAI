@@ -63,6 +63,9 @@ input, select, textarea { font-size: 16px; }
 button, label, a { touch-action: manipulation; }
 h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 :focus-visible { outline: 2px solid var(--engine); outline-offset: 2px; }
+/* Пальцем или мышью обводка у кнопок и ссылок не нужна: её давал фокус, который окно ставит на
+   первый элемент при открытии и возвращает на кнопку при закрытии. С клавиатуры — остаётся. */
+html[data-input="pointer"] :focus-visible:not(input, textarea, select) { outline: none; }
 [hidden] { display: none !important; }
 .muted { color: var(--muted); font-size: 13.5px; }
 .error { color: var(--error); }

@@ -1,5 +1,12 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
+
+// Чем пользуются сейчас: пальцем или мышью — без обводки фокуса, клавиатурой — с ней (см. style.css).
+document.documentElement.dataset.input = "pointer";
+document.addEventListener("pointerdown", () => { document.documentElement.dataset.input = "pointer"; }, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" || e.key.startsWith("Arrow")) document.documentElement.dataset.input = "keyboard";
+}, true);
 const NAME = { claude: "Claude", codex: "Codex" };
 const WINDOW = { five_hour: "5 ч", seven_day: "неделя" };
 let me = null, models = null, current = null, stream = null, count = 0, running = false;
