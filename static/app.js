@@ -181,25 +181,17 @@ function meter(name, used, limit, text) {
 }
 
 // Диск внизу панели, лимиты сети — в шапке беседы, плашка над полем ввода.
+let diskFull = false;
+
 function showMe() {
-  const blocks = [], warnings = [];
-  for (const [engine, windows] of Object.entries(me.limits)) {
-    for (const w of Object.keys(WINDOW)) {
-      const x = windows[w];
-      if (x.share >= 100) warnings.push(`Лимит ${NAME[engine]} (${WINDOW[w]}) исчерпан, сброс ${when(x.resets_at)}.`);
-    }
-  }
-  showLimits();
   const disk = me.disk;
-  if (disk.quota && disk.used >= disk.quota) warnings.push("Память закончилась: новые файлы загрузить не получится.");
+  diskFull = !!disk.quota && disk.used >= disk.quota;
   const diskBlock = el("div", "budget");
   diskBlock.append(disk.quota
     ? meter("Диск", disk.used / disk.quota * 100, 100, `${size(disk.used)} из ${size(disk.quota)}`)
     : meter("Диск", 0, 0, size(disk.used)));
-  blocks.push(diskBlock);
-  $("#quota").replaceChildren(...blocks);
-  $("#banner").hidden = !warnings.length;
-  $("#banner").textContent = warnings.join(" ");
+  $("#quota").replaceChildren(diskBlock);
+  showLimits();
 }
 
 // Лимиты сети открытой беседы: сначала 5-часовое окно, под ним недельное.
@@ -213,14 +205,24 @@ function shareText(x) {
     : `Без лимита: занятость всей подписки. Вы потратили ${percent(x.used)}.`;
 }
 
+// Плашка «лимит исчерпан» — только про сеть открытой беседы и в её цвете.
 function showLimits() {
-  const windows = current && me.limits[current.engine];
+  const engine = current?.engine;
+  const windows = engine && me.limits[engine];
+  const warnings = windows ? Object.keys(WINDOW).filter((w) => windows[w].share >= 100)
+    .map((w) => `Лимит ${NAME[engine]} (${WINDOW[w]}) исчерпан, сброс ${when(windows[w].resets_at)}.`) : [];
+  const limited = warnings.length > 0;
+  if (diskFull) warnings.push("Память закончилась: новые файлы загрузить не получится.");
   $("#limits").replaceChildren(...(windows ? Object.keys(WINDOW).map((w) => {
     const x = windows[w];
     const row = meter(WINDOW[w], x.share, 100, percent(x.share));
     row.title = `${shareText(x)} Сброс ${when(x.resets_at)}`;
     return row;
   }) : []));
+  const banner = $("#banner");
+  banner.hidden = !warnings.length;
+  banner.textContent = warnings.join(" ");
+  banner.classList.toggle("limit", limited);
 }
 
 let compactOffer = false;  // сессия открытой беседы больше порога сжатия
@@ -546,7 +548,9 @@ function render(ev) {
   } else if (ev.kind === "warning") {
     node = el("div", "msg-error", ev.text);
   } else if (ev.kind === "error") {
-    node = el("div", "msg-error", "Ошибка: " + ev.text);
+    // Лимит — не сбой: в цвете сети беседы; в старых записях флага нет, узнаём по тексту.
+    const limit = ev.limit || /^Лимит .* исчерпан/.test(ev.text || "");
+    node = el("div", "msg-error" + (limit ? " msg-limit" : ""), limit ? ev.text : "Ошибка: " + ev.text);
   } else if (ev.kind === "compact") {
     endTurn();
     node = el("div", "msg-note", "Сжатие беседы…");

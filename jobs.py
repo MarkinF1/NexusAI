@@ -206,7 +206,7 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
     except Exception as e:
         if not (job.stopped or limited):
             log.exception("model failed")
-        await push(key, job, {"kind": "error", "text": limited} if limited
+        await push(key, job, {"kind": "error", "text": limited, "limit": True} if limited
                    else {"kind": "stopped"} if job.stopped else {"kind": "error", "text": str(e)})
     finally:
         try:

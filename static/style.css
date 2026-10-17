@@ -150,6 +150,9 @@ input, textarea {
 .meter .bar b { position: absolute; top: -3px; width: 2px; height: 10px; margin-left: -1px; background: var(--ink); border-radius: 1px; }
 .meter.over { color: var(--error); }
 .meter.over .bar i { background: var(--error); }
+/* Лимит сети — в цвете сети беседы, красным остаётся только диск. */
+#limits .meter.over { color: var(--engine); }
+#limits .meter.over .bar i { background: var(--engine); }
 
 .side-foot { display: flex; align-items: center; gap: 8px; padding: 8px 10px 12px 18px; border-top: 1px solid var(--line); }
 #me { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -215,6 +218,8 @@ input, textarea {
 
 .msg-error { color: var(--error); white-space: pre-wrap; }
 .msg-error::after { left: 5px; top: 6px; width: 10px; height: 10px; background: var(--error); transform: rotate(45deg); }
+.msg-limit { color: var(--engine); }
+.msg-limit::after { background: var(--engine); }
 .msg-note { color: var(--muted); font-size: 13.5px; }
 /* Под репликой и под ответом ИИ — кнопка «Копировать», прижатая к сообщению */
 /* Только y: x рельса задаёт общее правило, на телефоне оно другое */
@@ -324,6 +329,7 @@ a.chip:hover { border-color: var(--engine); }
 .transcript-ask span { margin-right: auto; }
 .transcript-ask button { padding: 6px 18px; }
 
+.banner.limit { color: var(--engine); }
 .banner { color: var(--error); border: 1px solid currentColor; border-radius: 10px; padding: 8px 12px; margin-bottom: 8px !important; font-size: 13.5px; }
 
 #scrim { display: none; }
