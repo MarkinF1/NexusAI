@@ -6,6 +6,7 @@ Telegram — обычная беседа пользователя с полем 
 задан NEXUS_TG_TOKEN. Порт бота NexusAITg.
 """
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -550,16 +551,35 @@ async def download_attachment(uid, message, cwd):
     return destination, mime
 
 
+def compact_kb(uid, meta):
+    """Кнопка «Сжать беседу», если сессия Claude больше порога пользователя."""
+    due = jobs.compact_due(uid, meta)
+    if not due:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text=f"🗜 Сжать беседу · {jobs.human(due[0])}", callback_data=f"compact:{meta['id']}")]])
+
+
+def compacted_text(e):
+    was = f": было ≈{round(e['tokens'] / 1000):,} тыс. токенов".replace(",", " ") if e.get("tokens") else ""
+    return ("Claude сам сжал беседу" if e.get("auto") else "Беседа сжата") + was
+
+
 async def deliver(message, uid, meta, events):
-    """Ответ из журнала беседы: текст, ошибки и готовые файлы. Инструменты видно на сайте."""
+    """Ответ из журнала беседы: текст, ошибки и готовые файлы. Инструменты видно на сайте.
+    Под последним куском текста — «Сжать беседу», если сессия выросла больше порога."""
     text = "\n\n".join(e["text"] for e in events if e["kind"] == "text")
-    for chunk in split_message(text):
-        await message.answer(chunk)
+    chunks = split_message(text)
+    kb = compact_kb(uid, meta) if chunks else None
+    for i, chunk in enumerate(chunks):
+        await message.answer(chunk, reply_markup=kb if i == len(chunks) - 1 else None)
     for e in events:
         if e["kind"] in ("error", "warning"):
             await message.answer(("Ошибка: " if e["kind"] == "error" else "") + e["text"])
         elif e["kind"] == "stopped":
             await message.answer("Ответ остановлен.")
+        elif e["kind"] == "compacted":
+            await message.answer(compacted_text(e))
     cwd = core.workspace(uid, meta["id"])
     for e in events:
         for rel in e.get("files", []) if e["kind"] == "done" else []:
@@ -634,6 +654,30 @@ async def respond(message, owner, text, attachments=()):
             await message.answer(str(e))
             return
         await deliver(message, owner, meta, core.history(owner, meta["id"])[start + 1:])
+
+
+@dp.callback_query(F.data.startswith("compact:"))
+async def on_compact(call: CallbackQuery, owner):
+    """«Сжать беседу» под ответом: то же, что кнопка на сайте."""
+    meta = core.load_chat(owner, call.data[len("compact:"):])
+    if not meta or not jobs.in_tg(meta) or meta["tg"]["chat"] != call.message.chat.id:
+        await call.answer("Беседы больше нет")
+        return
+    with contextlib.suppress(TelegramBadRequest):  # кнопка одноразовая
+        await call.message.edit_reply_markup(reply_markup=None)
+    await call.answer("Сжимаю беседу…")
+    async with locks[(owner, meta["id"])]:
+        meta = core.load_chat(owner, meta["id"]) or meta
+        start = len(core.history(owner, meta["id"]))
+        try:
+            async with ChatActionSender.typing(bot=call.bot, chat_id=call.message.chat.id,
+                                               message_thread_id=call.message.message_thread_id):
+                job = await jobs.compact(owner, meta, channel="tg")
+                await job.task
+        except jobs.Refused as e:
+            await call.message.answer(str(e))
+            return
+        await deliver(call.message, owner, meta, core.history(owner, meta["id"])[start + 1:])
 
 
 @dp.message(F.text)
