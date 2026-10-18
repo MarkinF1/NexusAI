@@ -535,8 +535,6 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
 /* --- Телефон: беседа на весь экран, панель бесед выезжает слева,
    настройки — на весь экран по шагам. Отступы env() — под вырез и полоску «Домой». --- */
 @media (max-width: 760px) {
-  .library-filters { padding: 0 14px 8px; gap: 6px; }
-  .library-bar { padding: 10px 14px; }
   #side {
     position: fixed; inset: 0 auto 0 0; z-index: 10; transform: translateX(-100%); transition: transform .2s;
     width: min(320px, 86vw); padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
