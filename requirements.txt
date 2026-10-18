@@ -7,3 +7,6 @@ faster-whisper>=1.1
 av<19
 # Web Push «Ответ готов» в браузер и веб-приложение iPhone
 pywebpush>=2,<3
+# Миниатюры фото в «Файлах беседы» и библиотеке (HEIC — фото iPhone)
+Pillow>=10
+pillow-heif>=0.18

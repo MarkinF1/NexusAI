@@ -1317,7 +1317,15 @@ function transcriptNode(ev) {
 
 // --- Файлы беседы ---
 
-const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|heic|heif|svg)$/i;
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|heic|heif|tiff?|svg)$/i;
+
+// Миниатюру фото сервер делает сам (WebP ~360 точек): окно с сотней фото не тянет
+// мегабайты оригиналов. SVG и так лёгкий — он показывается как есть. v= — время
+// изменения: пока файл тот же, миниатюра берётся из кэша браузера.
+function thumbUrl(base, path, mtime, original) {
+  if (/\.svg$/i.test(path)) return original;
+  return `${base}/thumb?path=${encodeURIComponent(path)}&v=${Math.round((mtime || 0) * 1000)}`;
+}
 
 // Плитка: превью фото или значок файла с расширением, под ним только имя.
 function fillTile(a, name, src) {
@@ -1342,11 +1350,11 @@ function fillTile(a, name, src) {
 }
 
 // Папка (general, for_user…) — во всплывающей подсказке.
-function fileTile(path) {
-  const a = fileLink(path);
+function fileTile(f) {
+  const a = fileLink(f.path);
   a.className = "";
-  a.title = path.replace(/^files\//, "");
-  return fillTile(a, a.textContent, a.href);
+  a.title = f.path.replace(/^files\//, "");
+  return fillTile(a, a.textContent, thumbUrl(`/api/chats/${current.id}`, f.path, f.mtime, a.href));
 }
 
 const baseName = (path) => path.split("/").pop();
@@ -1372,7 +1380,7 @@ function showFiles() {
   $("#files-list").replaceChildren(...(items.length ? items.map((f) => {
     const li = el("li");
     const name = baseName(f.path);
-    li.append(fileTile(f.path), deleteButton("Удалить " + name, async () => {
+    li.append(fileTile(f), deleteButton("Удалить " + name, async () => {
       // Файлы из general уже в библиотеке: там они остаются.
       const kept = f.path.startsWith("files/general/");
       if (!confirm(kept ? `Убрать «${name}» из беседы? В библиотеке файл останется.` : `Удалить «${name}»?`)) return;
@@ -1420,7 +1428,7 @@ function libraryCard(f) {
   open.target = "_blank";
   open.rel = "noopener";
   open.title = f.path;
-  fillTile(open, name, libraryUrl(f.path));
+  fillTile(open, name, thumbUrl("/api/library", f.path, f.mtime, libraryUrl(f.path)));
   const chats = el("div", "file-chats");
   if (!f.chats.length) chats.append(el("span", "muted", "без беседы"));
   f.chats.forEach((c, i) => {

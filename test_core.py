@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -347,6 +348,66 @@ class Library(unittest.TestCase):
                 app.delete_library_file(bad, owner)
         with self.assertRaises(HTTPException):
             app.delete_file(a, "files/general/x", {"id": 37, "is_admin": False})  # чужая беседа
+
+
+class Thumbnails(unittest.TestCase):
+    def photo(self, path, size=(3000, 2000), orientation=None):
+        from PIL import Image
+        image = Image.new("RGB", size, (200, 30, 30))
+        exif = Image.Exif()
+        if orientation:
+            exif[0x0112] = orientation  # повёрнутое фото с телефона
+        image.save(path, "JPEG", quality=95, exif=exif)
+
+    def test_chat_and_library(self):
+        from PIL import Image
+        import thumbs
+        owner = {"id": 36, "is_admin": False}
+        meta = core.create_chat(36, "claude", "sonnet")
+        cwd = core.workspace(36, meta["id"])
+        self.photo(os.path.join(cwd, "files", "for_user", "photo.jpg"), orientation=6)
+        with open(os.path.join(cwd, "files", "for_user", "notes.txt"), "w") as f:
+            f.write("текст")
+        response = app.chat_thumb(meta["id"], "files/for_user/photo.jpg", owner)
+        self.assertEqual(response.media_type, "image/webp")
+        self.assertIn("immutable", response.headers["cache-control"])
+        with Image.open(response.path) as image:
+            self.assertEqual(image.size, (240, 360))  # уменьшено и повёрнуто по EXIF
+        self.assertLess(os.path.getsize(response.path), 20_000)
+        with self.assertRaises(HTTPException) as err:
+            app.chat_thumb(meta["id"], "files/for_user/notes.txt", owner)
+        self.assertEqual(err.exception.status_code, 415)
+        with self.assertRaises(HTTPException):
+            app.chat_thumb(meta["id"], "../../chats", owner)
+        with self.assertRaises(HTTPException):  # чужая беседа
+            app.chat_thumb(meta["id"], "files/for_user/photo.jpg", {"id": 37, "is_admin": False})
+        # После ответа файл в библиотеке — та же миниатюра (одна на жёсткие ссылки).
+        core.finish(36, meta["id"], True)
+        same = app.library_thumb("photo.jpg", owner)
+        self.assertEqual(same.path, app.chat_thumb(meta["id"], "files/general/photo.jpg", owner).path)
+        self.assertEqual(same.path, response.path)
+        # Файл заменили: новая миниатюра, старая удалена.
+        time.sleep(0.01)
+        self.photo(os.path.join(core.library(36), "photo.jpg"), size=(500, 1000))
+        fresh = app.library_thumb("photo.jpg", owner)
+        self.assertNotEqual(fresh.path, response.path)
+        self.assertFalse(os.path.exists(response.path))
+        with Image.open(fresh.path) as image:
+            self.assertEqual(image.size, (180, 360))
+        broken = os.path.join(core.library(36), "broken.png")
+        with open(broken, "wb") as f:
+            f.write(b"not a png")
+        with self.assertRaises(HTTPException) as err:
+            app.library_thumb("broken.png", owner)
+        self.assertEqual(err.exception.status_code, 415)
+        folder = pathlib.Path(core.user_dir(36)) / "thumbs"
+        self.assertEqual([p.suffix for p in folder.iterdir()], [".webp"])  # без недописанных .tmp
+        # Уборка: давно не открытые миниатюры уходят.
+        old = time.time() - 40 * 86400
+        os.utime(fresh.path, (old, old))
+        thumbs.swept.clear()
+        thumbs.sweep(folder)
+        self.assertEqual(list(folder.iterdir()), [])
 
 
 class Voice(unittest.TestCase):

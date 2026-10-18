@@ -27,6 +27,7 @@ import session_files
 import settings
 import stt
 import tg
+import thumbs
 import usage
 import users
 
@@ -561,8 +562,7 @@ def list_files(chat: str, user=Depends(current_user)):
     return sorted(files, key=lambda f: f["mtime"], reverse=True)  # свежие сверху
 
 
-@app.get("/api/chats/{chat}/file")
-def get_file(chat: str, path: str, user=Depends(current_user)):
+def chat_file_target(user, chat, path):
     root = chat_files_root(user, chat)
     target = (root / path).resolve()  # resolve раскрывает ../ и ссылки наружу
     if not target.is_relative_to(root / "files") or not target.is_file():
@@ -571,7 +571,30 @@ def get_file(chat: str, path: str, user=Depends(current_user)):
     # Вторая жёсткая ссылка допустима только в библиотеке: иначе это может быть чужой файл.
     if info.st_nlink > 1 and session_files.inode(info) not in session_files.shelved(core.library(user["id"])):
         raise HTTPException(404, "Нет такого файла")
+    return target
+
+
+@app.get("/api/chats/{chat}/file")
+def get_file(chat: str, path: str, user=Depends(current_user)):
+    target = chat_file_target(user, chat, path)
     return FileResponse(target, filename=target.name)
+
+
+def thumb_response(user, target):
+    """Миниатюра фото вместо оригинала. В адресе — время изменения файла (v=), поэтому
+    браузер держит её в кэше, пока файл не заменят. 415 — не картинка: плитка
+    покажет значок."""
+    try:
+        path = thumbs.thumbnail(Path(core.user_dir(user["id"])) / "thumbs", target)
+    except thumbs.Unsupported:
+        raise HTTPException(415, "Нет миниатюры")
+    return FileResponse(path, media_type=thumbs.MEDIA,
+                        headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@app.get("/api/chats/{chat}/thumb")
+def chat_thumb(chat: str, path: str, user=Depends(current_user)):
+    return thumb_response(user, chat_file_target(user, chat, path))
 
 
 @app.delete("/api/chats/{chat}/file")
@@ -604,12 +627,22 @@ def library(user=Depends(current_user)):
     return sorted(items, key=lambda i: i["mtime"], reverse=True)
 
 
-@app.get("/api/library/file")
-def library_file(path: str, download: bool = False, user=Depends(current_user)):
+def library_target(user, path):
     root = Path(core.library(user["id"])).resolve()
     target = (root / path).resolve()  # resolve раскрывает ../ и ссылки наружу
     if not target.is_relative_to(root) or not target.is_file():
         raise HTTPException(404, "Нет такого файла")
+    return target
+
+
+@app.get("/api/library/thumb")
+def library_thumb(path: str, user=Depends(current_user)):
+    return thumb_response(user, library_target(user, path))
+
+
+@app.get("/api/library/file")
+def library_file(path: str, download: bool = False, user=Depends(current_user)):
+    target = library_target(user, path)
     if download:
         return FileResponse(target, filename=target.name)
     # Просмотр в браузере: файлы делают модели и приходят из сети. sandbox не даёт
