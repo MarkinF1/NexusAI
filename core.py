@@ -1093,25 +1093,37 @@ def chats_with(uid, path):
 
 def delete_library_file(uid, path):
     """Удаляет файл из библиотеки и из files/general всех бесед. False — нет такого файла."""
-    target = session_files.contained(library(uid), path)
-    try:
-        info = target.lstat() if target else None
-    except OSError:
-        info = None
-    if info is None or not stat.S_ISREG(info.st_mode):
-        return False
-    key = session_files.inode(info)
+    return bool(delete_library_files(uid, [path]))
+
+
+def delete_library_files(uid, paths):
+    """Удаляет файлы из библиотеки и из files/general всех бесед; беседы обходятся один
+    раз на всю пачку. Возвращает пути, которые удалены (несуществующие пропускаются)."""
+    root = library(uid)
+    targets = {}  # номер файла -> (путь в библиотеке, файл)
+    for path in paths:
+        target = session_files.contained(root, path)
+        try:
+            info = target.lstat() if target else None
+        except OSError:
+            info = None
+        if info is not None and stat.S_ISREG(info.st_mode):
+            targets.setdefault(session_files.inode(info), (path, target))
+    if not targets:
+        return []
+    keys = frozenset(targets)
     for meta in list_chats(uid):
         cwd = os.path.join(data_dir(uid), "workspaces", meta["id"])
         if not os.path.isdir(cwd):
             continue
-        found = [p for p in session_files.queued(cwd, "general", {key}) if session_files.inode(p.lstat()) == key]
+        found = [p for p in session_files.queued(cwd, "general", keys) if session_files.inode(p.lstat()) in keys]
         for p in found:
             p.unlink()
         if found:
             shelve(uid, meta["id"])
-    target.unlink()
-    return True
+    for _, target in targets.values():
+        target.unlink(missing_ok=True)
+    return [path for path, _ in targets.values()]
 
 
 def shelve(uid, chat):

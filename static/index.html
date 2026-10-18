@@ -171,7 +171,17 @@
     <input id="library-search" type="search" placeholder="Поиск по имени" aria-label="Поиск по имени">
     <span id="library-total" class="muted"></span>
   </div>
+  <div class="library-filters">
+    <select id="library-chat" aria-label="Беседа"></select>
+    <select id="library-kind" aria-label="Тип файла"></select>
+    <button id="library-select" type="button">Выбрать</button>
+  </div>
   <ul id="library-list" class="file-grid"></ul>
+  <div id="library-bar" class="library-bar" hidden>
+    <button id="library-all" type="button" class="link"></button>
+    <span id="library-picked" class="muted"></span>
+    <button id="library-delete" type="button" class="danger" disabled>Удалить</button>
+  </div>
 </dialog>
 
 <dialog id="files">

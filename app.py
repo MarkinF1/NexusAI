@@ -651,6 +651,24 @@ def library_file(path: str, download: bool = False, user=Depends(current_user)):
                         headers={"Content-Security-Policy": "sandbox"})
 
 
+class LibraryPaths(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/library/delete")
+def delete_library_files(body: LibraryPaths, user=Depends(current_user)):
+    """Несколько файлов сразу (выделение в библиотеке). Если какая-то из бесед с этими
+    файлами сейчас отвечает, не удаляется ничего."""
+    paths = list(dict.fromkeys(body.paths))
+    if not paths or len(paths) > 5000:
+        raise HTTPException(400, "Не выбраны файлы")
+    wanted = frozenset(paths)
+    for meta in core.list_chats(user["id"]):
+        if wanted & set(core.links(user["id"], meta["id"]).values()):
+            idle(user, meta["id"])
+    return {"deleted": core.delete_library_files(user["id"], paths)}
+
+
 @app.delete("/api/library/file")
 def delete_library_file(path: str, user=Depends(current_user)):
     """Файл удаляется совсем: из библиотеки и из всех бесед, где он лежит."""
