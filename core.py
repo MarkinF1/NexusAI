@@ -475,8 +475,9 @@ def codex_limits(uid, sid, since):
     return events
 
 
-# Скиллы сайта — один плагин claude: data/plugin/skills/<имя>/SKILL.md. Модель видит
-# их как nexus:<имя>, читает и запускает их скрипты, но менять не может.
+# Общие скиллы сайта: data/plugin/skills/<имя>/SKILL.md. Claude получает их одним
+# плагином nexus, Codex — ссылками в своей изолированной CODEX_HOME. Обе модели
+# читают и запускают их скрипты, но менять не могут.
 PLUGIN = os.path.join(DATA, "plugin")
 # Python, node и пакеты, которые нужны скиллам (как ставить — в README).
 TOOLS = os.path.join(PLUGIN, "tools")
@@ -522,6 +523,33 @@ def skills():
         with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"), "w") as f:
             json.dump({"name": "nexus", "version": "1.0.0"}, f)
     return found
+
+
+def codex_skills(uid, enabled=True, disabled=()):
+    """Подключить опубликованные скиллы к Codex конкретного пользователя.
+
+    Системную папку .system и установленные самим Codex элементы не трогаем. Нашими
+    считаются только ссылки в data/plugin/skills. Возвращаем настоящие каталоги
+    включённых скиллов: их надо открыть песочнице на чтение для скриптов/assets.
+    """
+    available = skills() if enabled else {}
+    wanted = set(available) - set(disabled)
+    folder = os.path.join(codex_home(uid), "skills")
+    os.makedirs(folder, exist_ok=True)
+    root = os.path.realpath(os.path.join(PLUGIN, "skills"))
+    for old in glob.glob(os.path.join(folder, "*")):
+        if os.path.islink(old) and os.path.commonpath([os.path.realpath(old), root]) == root \
+                and os.path.basename(old) not in wanted:
+            os.unlink(old)
+    linked = []
+    for name in sorted(wanted):
+        source = os.path.join(root, name)
+        link = os.path.join(folder, name)
+        if not os.path.lexists(link):
+            os.symlink(source, link)
+        if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(source):
+            linked.append(os.path.realpath(source))
+    return linked
 
 
 def other_workspaces(uid, chat, access):
@@ -803,6 +831,10 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
     mode = "write" if access["write"] else "read"
     data = data_dir(uid)
     rules = {data: mode}
+    # Системные скиллы Codex остаются как есть; опубликованные скиллы сайта у
+    # каждого пользователя свои и доступны только на чтение.
+    for path in codex_skills(uid, access["skills"], access["skills_off"]):
+        rules[path] = "read"
     # Запрет памяти действует и в доступных соседних беседах. Не выдаём write
     # отдельным файлам: Codex 0.154.0 считает их каталогами и ломает bwrap.
     if not access["memory"]:

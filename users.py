@@ -28,11 +28,12 @@ ACCESS = {"claude": {"bash": True, "write": True, "memory": True, "network": Tru
                      "unsandboxed": False, "skills": True},
           "codex": {"bash": True, "write": True, "memory": True, "network": True,
                     "web": True, "web_cached": False, "all_chats": True,
-                    "multi_agent": True, "site_allow": False, "site_deny": False, "unsandboxed": False}}
+                    "multi_agent": True, "skills": True, "site_allow": False, "site_deny": False,
+                    "unsandboxed": False}}
 # Списки к галочкам site_allow, site_deny, commands и unsandboxed; skills_off — снятые скиллы.
 LISTS = {"claude": ("allowed_sites", "denied_sites", "allowed_commands", "denied_commands",
                     "unsandboxed_commands", "skills_off"),
-         "codex": ("allowed_sites", "denied_sites", "unsandboxed_commands")}
+         "codex": ("allowed_sites", "denied_sites", "unsandboxed_commands", "skills_off")}
 SITE = re.compile(r"(\*\.)?([a-z0-9-]+\.)*[a-z0-9-]+")
 
 

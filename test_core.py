@@ -1160,6 +1160,27 @@ class Permissions(unittest.TestCase):
         self.assertEqual(fs[core.library(3)], "deny")
         self.assertNotIn(os.path.join(other, "MEMORY.md"), fs)
 
+    def test_codex_site_skills(self):
+        self.addCleanup(shutil.rmtree, core.PLUGIN, True)
+        for name in ("docx", "pdf"):
+            folder = os.path.join(core.PLUGIN, "skills", name)
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "SKILL.md"), "w") as f:
+                f.write(f"---\nname: {name}\ndescription: {name}\n---\n")
+        fs = self.codex_settings(skills=True, skills_off=["pdf"])["permissions"]["chat"]["filesystem"]
+        links = os.path.join(core.codex_home(3), "skills")
+        self.assertTrue(os.path.islink(os.path.join(links, "docx")))
+        self.assertFalse(os.path.lexists(os.path.join(links, "pdf")))
+        self.assertEqual(fs[os.path.realpath(os.path.join(core.PLUGIN, "skills", "docx"))], "read")
+        # Системные скиллы и посторонние элементы в CODEX_HOME не удаляются.
+        os.makedirs(os.path.join(links, ".system"), exist_ok=True)
+        with open(os.path.join(links, "mine"), "w") as f:
+            f.write("keep")
+        self.codex_settings(skills=False, skills_off=[])
+        self.assertFalse(os.path.lexists(os.path.join(links, "docx")))
+        self.assertTrue(os.path.isdir(os.path.join(links, ".system")))
+        self.assertTrue(os.path.isfile(os.path.join(links, "mine")))
+
     def test_codex_network_and_tools(self):
         conf = self.codex_settings(bash=False, multi_agent=False, web_cached=True,
                                    site_allow=True, allowed_sites=["docs.python.org"],
@@ -1237,6 +1258,9 @@ class Settings(unittest.TestCase):
         self.assertFalse(users.clean({"access": {"claude": {"write": False}}})["access"]["claude"]["memory"])
         self.assertFalse(users.clean({"access": {"codex": {"write": False}}})["access"]["codex"]["memory"])
         self.assertFalse(users.clean({"access": {"codex": {"write": False, "memory": True}}})["access"]["codex"]["memory"])
+        self.assertTrue(users.clean({})["access"]["codex"]["skills"])
+        self.assertEqual(users.clean({"access": {"codex": {"skills_off": ["pdf"]}}})
+                         ["access"]["codex"]["skills_off"], ["pdf"])
         codex = users.clean({"access": {"codex": {"allowed_sites": ["https://Docs.Python.org/3/"]}}})["access"]["codex"]
         self.assertEqual(codex["allowed_sites"], ["docs.python.org"])
         self.assertFalse(ALL["commands"] or ALL["site_allow"] or ALL["site_deny"])
