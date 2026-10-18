@@ -11,7 +11,6 @@ import io
 import json
 import logging
 import os
-import secrets
 import time
 import uuid
 from collections import defaultdict
@@ -51,7 +50,6 @@ log = logging.getLogger("nexus.tg")
 dp = Dispatcher()
 bot = None  # запущенный бот: через него идут уведомления
 bot_name = None  # username бота: из него собирается ссылка привязки
-codes = {}  # код привязки -> (uid, срок); ponytail: в памяти, рестарт сбрасывает коды
 # Сообщения одной беседы идут по очереди: одна сессия CLI — один ответ за раз.
 locks = defaultdict(asyncio.Lock)
 # Альбом Telegram шлёт отдельными сообщениями с общим media_group_id — копим их
@@ -64,12 +62,7 @@ album_deadline = {}
 
 def link(uid):
     """Ссылка t.me, по которой бот привяжет Telegram к пользователю сайта."""
-    now = time.time()
-    for code in [c for c, (_, expires) in codes.items() if expires < now]:
-        del codes[code]
-    code = secrets.token_urlsafe(16)
-    codes[code] = (uid, now + CODE_TTL)
-    return f"https://t.me/{bot_name}?start={code}"
+    return f"https://t.me/{bot_name}?start={users.new_tg_code(uid, CODE_TTL)}"
 
 
 async def notify(uid, text):
@@ -265,8 +258,8 @@ async def edit(call, text, kb=None):
 async def on_start(message: Message, who, owner):
     code = (message.text or "").split(maxsplit=1)[1:]
     if not is_group(message) and code:
-        uid, expires = codes.pop(code[0], (None, 0))
-        if not uid or expires < time.time():
+        uid = users.take_tg_code(code[0])
+        if not uid:
             await message.answer("Ссылка устарела. Нажмите «Привязать Telegram» на сайте ещё раз.")
             return
         try:

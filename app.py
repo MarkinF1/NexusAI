@@ -40,7 +40,6 @@ MAX_VOICE_SECONDS = 10 * 60
 VOICE_TYPES = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/aac": "aac",
                "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-wav": "wav"}
 VOICE_ID = re.compile(r"[0-9a-f]{32}")
-LOCK_AFTER, LOCK_FOR = 5, 15 * 60
 
 bot_task = None  # опрос Telegram; новый токен в «Общих настройках» перезапускает его
 
@@ -79,9 +78,6 @@ settings.watch(settings.TG_TOKEN.name, lambda _: asyncio.get_running_loop().crea
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-# ponytail: счётчик неудачных входов в памяти — сбрасывается рестартом,
-# для одного сервера этого достаточно.
-failures = {}  # имя -> (неудач подряд, время последней)
 
 
 @app.middleware("http")
@@ -142,15 +138,14 @@ class Credentials(BaseModel):
 def login(body: Credentials, request: Request, response: Response):
     # Обычная def: FastAPI выполнит её в пуле потоков, scrypt и sleep не держат цикл.
     name = body.name.strip()
-    count, last = failures.get(name, (0, 0))
-    if count >= LOCK_AFTER and time.time() - last < LOCK_FOR:
+    if users.locked(name):
         raise HTTPException(429, "Слишком много попыток, подождите 15 минут")
     user = users.check(name, body.password)
     if not user:
-        failures[name] = (count + 1, time.time())
+        users.failed(name)
         time.sleep(1)
         raise HTTPException(401, "Неверное имя или пароль")
-    failures.pop(name, None)
+    users.succeeded(name)
     secure = (request.url.scheme == "https"
               or request.headers.get("x-forwarded-proto") == "https")
     response.set_cookie(COOKIE, users.login(user["id"]), max_age=users.LOGIN_TTL,

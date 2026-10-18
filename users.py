@@ -17,6 +17,7 @@ import core
 import settings as general  # общие настройки сервиса; settings() здесь — настройки пользователя
 
 LOGIN_TTL = 30 * 24 * 3600
+LOCK_AFTER, LOCK_FOR = 5, 15 * 60  # столько неудачных входов подряд — и вход по имени закрыт на 15 мин
 # Порог «Сжать беседу» у тех, кому его ещё не задали; 0 — не предлагать.
 # Галочки «Доступ» у каждой сети свои: что модели можно делать в песочнице.
 # Значение — умолчание для того, у кого галочки ещё нет: прежние права остаются,
@@ -52,6 +53,14 @@ def db():
         CREATE TABLE IF NOT EXISTS tg_groups (
             chat_id INTEGER PRIMARY KEY,
             owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE);
+        CREATE TABLE IF NOT EXISTS login_failures (
+            name TEXT PRIMARY KEY,
+            count INTEGER NOT NULL,
+            last REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS tg_codes (
+            code TEXT PRIMARY KEY,  -- sha256 кода: сам код есть только в ссылке
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires REAL NOT NULL);
     """)
     columns = [r["name"] for r in conn.execute("PRAGMA table_info(users)")]
     for name, kind in (("settings", "TEXT NOT NULL DEFAULT '{}'"), ("tg_id", "INTEGER"), ("tg_name", "TEXT"),
@@ -140,6 +149,52 @@ def by_token(token):
 def logout(token):
     with db() as conn:
         conn.execute("DELETE FROM logins WHERE token = ?", (token,))
+
+
+# Неудачные входы — в базе: перезапуск сервиса не обнуляет счётчик подбора пароля.
+
+def locked(name):
+    """Вход по имени закрыт: LOCK_AFTER неудач подряд, последняя — меньше LOCK_FOR назад."""
+    with db() as conn:
+        row = conn.execute("SELECT count, last FROM login_failures WHERE name = ?", (name,)).fetchone()
+    return bool(row) and row["count"] >= LOCK_AFTER and time.time() - row["last"] < LOCK_FOR
+
+
+def failed(name):
+    """Ещё одна неудача. Если прошлая была дольше LOCK_FOR назад, счёт начинается заново."""
+    now = time.time()
+    with db() as conn:
+        conn.execute("DELETE FROM login_failures WHERE last < ?", (now - LOCK_FOR,))  # старые не копим
+        conn.execute("INSERT INTO login_failures VALUES (?, 1, ?) "
+                     "ON CONFLICT(name) DO UPDATE SET count = count + 1, last = excluded.last", (name, now))
+
+
+def succeeded(name):
+    with db() as conn:
+        conn.execute("DELETE FROM login_failures WHERE name = ?", (name,))
+
+
+# Коды привязки Telegram — в базе: ссылка с сайта работает и после перезапуска.
+
+def code_hash(code):
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
+def new_tg_code(user_id, ttl):
+    code = secrets.token_urlsafe(16)
+    now = time.time()
+    with db() as conn:
+        conn.execute("DELETE FROM tg_codes WHERE expires < ?", (now,))
+        conn.execute("INSERT INTO tg_codes VALUES (?, ?, ?)", (code_hash(code), user_id, now + ttl))
+    return code
+
+
+def take_tg_code(code):
+    """id пользователя по коду; код одноразовый. None — нет такого или срок вышел."""
+    with db() as conn:
+        row = conn.execute("DELETE FROM tg_codes WHERE code = ? RETURNING user_id, expires",
+                           (code_hash(code),)).fetchone()
+    return row["user_id"] if row and row["expires"] >= time.time() else None
 
 
 # --- Telegram ---

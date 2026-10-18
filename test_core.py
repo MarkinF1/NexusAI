@@ -67,6 +67,50 @@ class Users(unittest.TestCase):
         self.assertIsNone(users.by_token(token))  # смена пароля выкидывает входы
 
 
+class Lockout(unittest.TestCase):
+    def request(self):
+        return unittest.mock.Mock(url=unittest.mock.Mock(scheme="http"), headers={})
+
+    def test_failures_survive_restart(self):
+        users.add("locky", "right")
+        credentials = app.Credentials(name="locky", password="wrong")
+        with unittest.mock.patch("time.sleep"):
+            for _ in range(users.LOCK_AFTER):
+                with self.assertRaises(HTTPException) as err:
+                    app.login(credentials, self.request(), app.Response())
+                self.assertEqual(err.exception.status_code, 401)
+            # Счётчик в базе, а не в памяти процесса: верный пароль тоже не пускает.
+            with self.assertRaises(HTTPException) as err:
+                app.login(app.Credentials(name="locky", password="right"), self.request(), app.Response())
+            self.assertEqual(err.exception.status_code, 429)
+            with users.db() as conn:
+                self.assertEqual(conn.execute("SELECT count FROM login_failures WHERE name = 'locky'").fetchone()[0],
+                                 users.LOCK_AFTER)
+                # Прошло 15 минут: вход открыт, прежние неудачи не считаются.
+                conn.execute("UPDATE login_failures SET last = last - ?", (users.LOCK_FOR + 1,))
+            self.assertFalse(users.locked("locky"))
+            with self.assertRaises(HTTPException):
+                app.login(credentials, self.request(), app.Response())
+            self.assertFalse(users.locked("locky"))
+            self.assertEqual(app.login(app.Credentials(name="locky", password="right"),
+                                       self.request(), app.Response())["name"], "locky")
+            self.assertFalse(users.locked("locky"))
+        with users.db() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM login_failures WHERE name = 'locky'").fetchone())
+
+    def test_tg_codes(self):
+        uid = users.add("coder", "pw")
+        code = users.new_tg_code(uid, 600)
+        with users.db() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM tg_codes WHERE code = ?", (code,)).fetchone())  # только хэш
+        self.assertEqual(users.take_tg_code(code), uid)
+        self.assertIsNone(users.take_tg_code(code))  # одноразовый
+        self.assertIsNone(users.take_tg_code(users.new_tg_code(uid, -1)))  # просрочен
+        other = users.new_tg_code(uid, 600)
+        users.delete(uid)
+        self.assertIsNone(users.take_tg_code(other))  # пользователя удалили — код пропал
+
+
 class Events(unittest.TestCase):
     def test_claude(self):
         rec = {"type": "assistant", "message": {"content": [
