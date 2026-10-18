@@ -577,8 +577,26 @@ def bash_rules(commands):
     return [f"Bash({p})" for p in patterns(commands)]
 
 
-def system_prompt(uid, cwd, channel):
-    return SYSTEM_PROMPT[channel] + OWNER_EMAIL + "\n" + session_files.instructions(cwd, memory_file(uid))
+def system_prompt(uid, cwd, channel, commands=()):
+    return (SYSTEM_PROMPT[channel] + OWNER_EMAIL + "\n" + session_files.instructions(cwd, memory_file(uid))
+            + outside_note(commands))
+
+
+def outside(access):
+    """Команды вне песочницы из «Опасной зоны»: только с галочкой и «Запуском команд»."""
+    return access["unsandboxed_commands"] if access["bash"] and access["unsandboxed"] else []
+
+
+def outside_note(commands):
+    """Без этой подсказки модель склеивает разрешённую команду с другими (find …; ls /home)
+    — и вся строка остаётся в песочнице, а модель решает, что доступа нет."""
+    if not commands:
+        return ""
+    listed = ", ".join(f"`{c}`" for c in commands)
+    return (f"\nВне песочницы, прямо на сервере, выполняются только эти команды: {listed}. "
+            "Такую команду запускай отдельным вызовом, одну, без ;, &&, | и других команд в той же строке, "
+            "и начинай её точно так, как в списке (дальше можно дописать аргументы). "
+            "Всё остальное выполняется в песочнице и видит только папку пользователя.\n")
 
 
 # --- Повтор последнего запроса: откат сессии CLI на ход назад ---
@@ -699,8 +717,8 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         allowed[i:i + 1] = bash_rules(access["allowed_commands"])
     # Опасная зона: эти команды идут мимо песочницы с правами хозяина сервера.
     # excludedCommands только выводит их наружу, разрешение нужно отдельно.
-    outside = access["unsandboxed_commands"] if access["bash"] and access["unsandboxed"] else []
-    allowed += bash_rules(outside)
+    outside_cmds = outside(access)
+    allowed += bash_rules(outside_cmds)
     # Без allowedDomains прокси песочницы спрашивал бы разрешение на каждый хост,
     # а в dontAsk это отказ. strictAllowlist — отказ наверняка.
     network = {"allowedDomains": ["*"]} if access["network"] else {"strictAllowlist": True}
@@ -762,7 +780,7 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
             "sandbox": {
                 "enabled": True, "failIfUnavailable": True,
                 "autoAllowBashIfSandboxed": not only_listed, "allowUnsandboxedCommands": False,
-                "excludedCommands": patterns(outside),
+                "excludedCommands": patterns(outside_cmds),
                 # Закрыто всё хозяйство сайта (база, токены подписок, чужие
                 # пользователи), открыта только папка данных этого пользователя.
                 "filesystem": filesystem,
@@ -774,7 +792,7 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         }),
         "--system-prompt-snapshot", "off",
         "--model", meta["model"],
-        "--system-prompt", system_prompt(uid, cwd, channel),
+        "--system-prompt", system_prompt(uid, cwd, channel, outside_cmds),
         # Транскрипт уже есть — продолжаем, иначе создаём сессию с нашим id.
         "--resume" if found else "--session-id", meta["sid"],
     ] + (["--effort", meta["effort"]] if meta["effort"] else []) + (
@@ -825,7 +843,7 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
     args = [CODEX_BIN, "exec", "-C", cwd] + (["resume", meta["sid"]] if meta["sid"] else []) + [
         "--json", "--skip-git-repo-check", "-m", meta["model"]] + codex_untrusted(cwd)
     # Опасная зона: эти команды идут мимо песочницы с правами хозяина сервера.
-    codex_rules(uid, access["unsandboxed_commands"] if access["bash"] and access["unsandboxed"] else [])
+    codex_rules(uid, outside(access))
     if meta["effort"]:
         args += ["-c", f'model_reasoning_effort="{meta["effort"]}"']
     mode = "write" if access["write"] else "read"
@@ -863,7 +881,7 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
                     "features.network_proxy.enabled=" + ("true" if filtered_network else "false"),
                     "permissions.chat.network.domains={%s}" % domain_rules,
                     'web_search="%s"' % web,
-                    'developer_instructions=' + json.dumps(system_prompt(uid, cwd, channel))):
+                    'developer_instructions=' + json.dumps(system_prompt(uid, cwd, channel, outside(access)))):
         args += ["-c", setting]
     if filtered_network:
         # Свой случайный порт у каждого запроса: параллельные беседы не конфликтуют.

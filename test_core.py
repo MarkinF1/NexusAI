@@ -1221,8 +1221,11 @@ class Permissions(unittest.TestCase):
         self.assertIn('prefix_rule(pattern=["git", "log", "a b"], decision="allow")', text)
         self.assertIn('host_executable(name="ls", paths=', text)  # свой «ls» по абсолютному пути не пройдёт
         self.assertEqual(os.listdir(os.path.dirname(rules)), ["nexus.rules"])
-        self.codex_settings(unsandboxed=False, unsandboxed_commands=["ls -la"])
+        # Модель знает список: иначе склеит команду с другими и останется в песочнице.
+        self.assertIn("`ls -la`", self.codex_settings(unsandboxed=True, unsandboxed_commands=["ls -la"])["developer_instructions"])
+        conf = self.codex_settings(unsandboxed=False, unsandboxed_commands=["ls -la"])
         self.assertFalse(os.path.exists(rules))
+        self.assertNotIn("Вне песочницы", conf["developer_instructions"])
         self.assertEqual(users.clean({"access": {"codex": {"unsandboxed_commands": [" docker  ps "]}}})
                          ["access"]["codex"]["unsandboxed_commands"], ["docker ps"])
         for bad in ("docker *", "echo 'a"):
