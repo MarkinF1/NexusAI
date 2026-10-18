@@ -10,14 +10,15 @@
 import json
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 @dataclass(frozen=True)
 class Parameter:
-    """Параметр общих настроек. Тип значения — тип default: число или строка."""
+    """Параметр общих настроек. Тип значения — тип default: число, строка или список
+    (несколько значений из choices: в форме — галочки, отмечаешь нужные)."""
     name: str  # техническое имя: ключ в settings.json и в коде
     title: str  # название на экране
     about: str  # за что отвечает
@@ -25,19 +26,43 @@ class Parameter:
     env: tuple = ()  # переменные .env с первоначальным значением, по порядку
     choices: tuple = ()  # допустимые значения; пусто — любые своего типа
     secret: bool = False  # в форме — скрытым полем
+    labels: dict = field(default_factory=dict)  # значение -> как его показать на экране
+    # Выбор, который знает только работающий сайт (каталог моделей codex): функция -> [(значение, подпись)].
+    options: object = None
+    shown_if: tuple = ()  # (имя параметра-списка, значение): показывать, только пока оно отмечено
+    aliases: tuple = ()  # прежние имена в settings.json — значение переносится под новое
 
     @property
     def kind(self):
+        if isinstance(self.default, list):
+            return "list"
         return "int" if isinstance(self.default, int) else "str"
 
-    def description(self):
-        """Описание для экрана; у параметра с выбором — и список значений."""
-        if not self.choices:
-            return self.about
-        return f"{self.about} Возможные значения: {', '.join(map(str, self.choices))}."
+    def label(self, value):
+        return self.labels.get(value, str(value))
 
-    def convert(self, value):
-        """Значение к типу параметра; не подходит — ValueError с понятным текстом."""
+    def choice_list(self):
+        """[(значение, подпись)] — постоянный выбор или каталог от работающего сайта."""
+        if self.options:
+            try:
+                return list(self.options())
+            except Exception:  # каталог недоступен — выбор пустой, а не падение формы
+                return []
+        return [(c, self.label(c)) for c in self.choices]
+
+    def convert(self, value, strict=True):
+        """Значение к типу параметра; не подходит — ValueError с понятным текстом.
+        strict=False — без сверки с каталогом (при запуске его ещё нет)."""
+        if self.kind == "list":
+            # Из .env и старых файлов приходит строкой: «[claude, codex]» или «claude, codex».
+            items = value if isinstance(value, list) else str(value or "").strip("[] ").split(",")
+            picked = {str(v).strip() for v in items if str(v).strip()}
+            wrong = {v for v in picked if v not in self.choices}  # set() здесь — свой, для настроек
+            if wrong:
+                raise ValueError(f"«{self.title}»: нет значения {', '.join(sorted(wrong))}")
+            if not picked:
+                raise ValueError(f"«{self.title}»: отметьте хотя бы одно")
+            return [c for c in self.choices if c in picked]  # порядок — как в choices
         if self.kind == "int":
             try:
                 result = int(str(value).strip())
@@ -49,16 +74,30 @@ class Parameter:
             result = "" if value is None else str(value).strip()
         if self.choices and result not in self.choices:
             raise ValueError(f"«{self.title}»: допустимо только {', '.join(map(str, self.choices))}")
+        if self.options and strict and result != self.default and result not in dict(self.choice_list()):
+            raise ValueError(f"«{self.title}»: нет такого значения — {result}")
         return result
 
 
 ENGINES = Parameter(
     "engines", "Нейросети сайта",
-    "Какие нейросети доступны на сайте. Подключаются только те, что установлены на сервере.",
-    "[claude, codex]", ("NEXUS_ENGINES",), ("[claude, codex]", "[claude]", "[codex]"))
-MODEL = Parameter(
-    "model", "Модель Claude по умолчанию", "С какой моделью Claude создаются новые беседы.",
-    "sonnet", ("NEXUS_MODEL",), ("opus", "sonnet", "haiku"))
+    "Какие нейросети работают на сайте и в Telegram. Подключаются только те, что установлены на сервере.",
+    ["claude", "codex"], ("NEXUS_ENGINES",), ("claude", "codex"),
+    labels={"claude": "Claude", "codex": "Codex"})
+def codex_catalog():
+    import core  # здесь, а не наверху: core сам импортирует настройки
+    return [("", "Первая в каталоге Codex")] + [(m["slug"], m["name"]) for m in core.codex_models()]
+
+
+CLAUDE_MODEL = Parameter(
+    "claude_model", "Модель Claude по умолчанию", "С какой моделью создаются новые беседы Claude.",
+    "sonnet", ("NEXUS_MODEL",), ("opus", "sonnet", "haiku"), shown_if=("engines", "claude"), aliases=("model",))
+CODEX_MODEL = Parameter(
+    "codex_model", "Модель Codex по умолчанию",
+    "С какой моделью создаются новые беседы Codex. Список — из каталога самого Codex.",
+    "", ("NEXUS_CODEX_MODEL",), options=codex_catalog, shown_if=("engines", "codex"))
+# Модель по умолчанию для новой беседы каждой сети.
+DEFAULT_MODEL = {"claude": CLAUDE_MODEL, "codex": CODEX_MODEL}
 TIMEOUT = Parameter(
     "timeout", "Предел одного ответа, секунд",
     "Сколько может идти один ответ, прежде чем сайт его остановит. Обычно ответ останавливают "
@@ -92,7 +131,7 @@ UPDATE_WAIT = Parameter(
     1800, ("NEXUS_UPDATE_WAIT",))
 
 # Порядок — порядок полей в форме.
-PARAMETERS = (ENGINES, MODEL, TIMEOUT, COMPACT_MB, USAGE_REFRESH, STT_MODEL, STT_LANG, TG_TOKEN, UPDATE_WAIT)
+PARAMETERS = (ENGINES, CLAUDE_MODEL, CODEX_MODEL, TIMEOUT, COMPACT_MB, USAGE_REFRESH, STT_MODEL, STT_LANG, TG_TOKEN, UPDATE_WAIT)
 BY_NAME = {p.name: p for p in PARAMETERS}
 
 _values = {}
@@ -132,10 +171,10 @@ def initial(param, file_env=None):
         raw = next((src[env] for src in sources if src.get(env, "").strip()), None)
         if raw is not None:
             try:
-                return param.convert(raw)
+                return param.convert(raw, strict=False)
             except ValueError:
                 break  # кривое значение в .env — берём по умолчанию
-    return param.default
+    return list(param.default) if isinstance(param.default, list) else param.default
 
 
 def _save():
@@ -159,12 +198,14 @@ def load():
         stored = {}
     values, file_env = {}, dotenv()
     for param in PARAMETERS:
+        key = next((k for k in (param.name, *param.aliases) if k in stored), None)
         try:
-            values[param.name] = param.convert(stored[param.name]) if param.name in stored else initial(param, file_env)
+            values[param.name] = param.convert(stored[key], strict=False) if key else initial(param, file_env)
         except ValueError:
             values[param.name] = initial(param, file_env)
-    # Незнакомые параметры (из более новой версии) не теряем.
-    values.update((k, v) for k, v in stored.items() if k not in BY_NAME)
+    # Незнакомые параметры (из более новой версии) не теряем; прежние имена — уже перенесены.
+    renamed = {a for p in PARAMETERS for a in p.aliases}
+    values.update((k, v) for k, v in stored.items() if k not in BY_NAME and k not in renamed)
     with _lock:
         _values.clear()
         _values.update(values)
@@ -197,9 +238,11 @@ def watch(name, fn):
 
 
 def listing():
-    """Все параметры для формы: имя, название, описание, значение, тип и выбор."""
-    return [{"name": p.name, "title": p.title, "about": p.description(), "value": _values[p.name],
-             "default": p.default, "type": p.kind, "choices": list(p.choices), "secret": p.secret}
+    """Все параметры для формы: имя, название, описание, значение, тип, выбор и условие показа."""
+    return [{"name": p.name, "title": p.title, "about": p.about, "value": _values[p.name],
+             "default": p.default, "type": p.kind, "secret": p.secret,
+             "choices": [{"value": v, "label": label} for v, label in p.choice_list()],
+             "shown_if": {"name": p.shown_if[0], "value": p.shown_if[1]} if p.shown_if else None}
             for p in PARAMETERS]
 
 

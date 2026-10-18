@@ -426,6 +426,19 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 .general-settings .setting input, .general-settings .setting select { width: 100%; }
 .general-settings .setting small { font-size: 12.5px; line-height: 1.4; }
 .general-settings .setting.changed :is(input, select) { border-color: var(--ink); }
+/* Несколько значений: строки-переключатели с галочкой справа */
+.general-settings .setting-list { cursor: default; }
+/* Зависит от отмеченной сети — сдвинуто под список сетей */
+.general-settings .setting.dependent { margin-left: 14px; padding-left: 12px; border-left: 2px solid var(--line); max-width: 532px; }
+.general-settings .setting[hidden] { display: none; }
+.general-settings .toggles { display: grid; max-width: 560px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.general-settings .toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 0; border-radius: 0; padding: 10px 12px; background: var(--raised); text-align: left; font-weight: 400; }
+.general-settings .toggle + .toggle { border-top: 1px solid var(--line); }
+.general-settings .toggle:hover { background: var(--soft); }
+.general-settings .toggle .tick { display: grid; place-items: center; width: 18px; height: 18px; visibility: hidden; }
+.general-settings .toggle .tick svg { fill: none; stroke: currentColor; stroke-width: 2.2; }
+.general-settings .toggle.on .tick { visibility: visible; }
+.general-settings .setting-list.changed .toggles { border-color: var(--ink); }
 .general-settings .save-bar { position: sticky; bottom: 0; padding: 12px 0 20px; background: var(--sheet); border-top: 1px solid var(--line); }
 .general-settings .save-bar[hidden] { display: none; }
 #settings:not(.admin) .users-side { flex: 1; width: auto; border: 0; }

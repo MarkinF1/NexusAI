@@ -318,9 +318,8 @@ def delete_chat(uid, meta, files=True):
 # --- Модели ---
 
 def engines():
-    """Сети из настройки engines (например «[claude, codex]»), которые есть в системе."""
-    wanted = settings.get(settings.ENGINES.name).strip("[] ").replace(" ", "")
-    listed = [e for e in wanted.split(",") if e] or list(ENGINES)
+    """Сети, отмеченные в общих настройках, которые есть в системе."""
+    listed = settings.get(settings.ENGINES.name)
     installed = {"claude": bool(CLAUDE_BIN) and os.access(CLAUDE_BIN, os.X_OK), "codex": bool(CODEX_BIN)}
     return [e for e in ENGINES if e in listed and installed[e]]
 

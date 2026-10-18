@@ -76,7 +76,7 @@ def new_chat(uid, engine, **extra):
     if engine not in avail:
         raise Refused(403, "Эта сеть вам недоступна")
     slugs = [m["slug"] for m in avail[engine]]
-    wanted = settings.get(settings.MODEL.name)
+    wanted = settings.get(settings.DEFAULT_MODEL[engine].name)
     model = wanted if wanted in slugs else slugs[0]
     meta = core.create_chat(uid, engine, model, default_effort(avail, engine, model))
     return core.save_chat(uid, {**meta, **extra}) if extra else meta

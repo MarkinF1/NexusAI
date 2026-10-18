@@ -1737,6 +1737,11 @@ async function openGeneral() {
     el("p", "muted", "Хранятся в data/settings.json и применяются сразу, без перезапуска. "
       + ".env задаёт только значения при первом запуске."));
   const changed = {};
+  const rows = [];  // [строка, параметр] — для показа по условию shown_if
+  const valueOf = (name) => changed[name] ?? list.find((x) => x.name === name)?.value;
+  const showDependent = () => rows.forEach(([row, p]) => {
+    if (p.shown_if) row.hidden = !(valueOf(p.shown_if.name) || []).includes(p.shown_if.value);
+  });
   const bar = el("div", "save-bar");
   bar.append(el("button", "primary", "Сохранить"));
   bar.hidden = true;
@@ -1744,10 +1749,40 @@ async function openGeneral() {
     const row = el("label", "setting");
     row.title = p.name;  // техническое имя — в подсказке, на экране русское название
     let input;
+    if (p.type === "list") {
+      // Несколько значений: нажатие включает и выключает галочку справа.
+      const picked = new Set(p.value);
+      row.className = "setting setting-list";
+      const box = el("div", "toggles");
+      for (const c of p.choices) {
+        const b = el("button", "toggle" + (picked.has(c.value) ? " on" : ""));
+        b.type = "button";
+        b.setAttribute("aria-pressed", String(picked.has(c.value)));
+        b.append(el("span", "", c.label), el("span", "tick"));
+        b.querySelector(".tick").innerHTML = '<svg width="18" height="18"><use href="#i-check"/></svg>';
+        b.onclick = () => {
+          if (picked.has(c.value)) picked.delete(c.value); else picked.add(c.value);
+          b.classList.toggle("on", picked.has(c.value));
+          b.setAttribute("aria-pressed", String(picked.has(c.value)));
+          const now = p.choices.map((x) => x.value).filter((v) => picked.has(v));
+          if (JSON.stringify(now) !== JSON.stringify(p.value)) changed[p.name] = now;
+          else delete changed[p.name];
+          row.classList.toggle("changed", p.name in changed);
+          bar.hidden = !Object.keys(changed).length;
+          showDependent();
+        };
+        box.append(b);
+      }
+      row.append(el("span", "setting-name", p.title), box);
+      if (p.about) row.append(el("small", "muted", p.about));
+      form.append(row);
+      rows.push([row, p]);
+      continue;
+    }
     if (p.choices.length) {
       // Только определённые значения — выбор из списка.
       input = el("select");
-      input.append(...p.choices.map((c) => { const o = el("option", "", String(c)); o.value = c; return o; }));
+      input.append(...p.choices.map((c) => { const o = el("option", "", c.label); o.value = c.value; return o; }));
     } else {
       input = el("input");
       input.type = p.secret ? "password" : p.type === "int" ? "number" : "text";
@@ -1764,8 +1799,11 @@ async function openGeneral() {
     };
     row.append(el("span", "setting-name", p.title), input);
     if (p.about) row.append(el("small", "muted", p.about));
+    if (p.shown_if) row.classList.add("dependent");
     form.append(row);
+    rows.push([row, p]);
   }
+  showDependent();
   form.append(bar);
   form.onsubmit = async (e) => {
     e.preventDefault();

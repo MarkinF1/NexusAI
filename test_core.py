@@ -448,7 +448,7 @@ class GeneralSettings(unittest.TestCase):
         self.assertEqual(settings.get(settings.TIMEOUT.name), 600)  # из .env
         self.assertEqual(settings.get(settings.STT_MODEL.name), "base")  # старое имя переменной тоже понимаем
         self.assertEqual(settings.get(settings.COMPACT_MB.name), 10)  # кривое значение в .env — по умолчанию
-        self.assertEqual(settings.get(settings.MODEL.name), "sonnet")  # нет в .env — по умолчанию
+        self.assertEqual(settings.get(settings.CLAUDE_MODEL.name), "sonnet")  # нет в .env — по умолчанию
         self.assertEqual(set(self.stored()), {p.name for p in settings.PARAMETERS})  # файл создан со всеми параметрами
         self.assertEqual(oct(os.stat(self.file).st_mode & 0o777), "0o600")  # внутри токен бота
 
@@ -467,14 +467,17 @@ class GeneralSettings(unittest.TestCase):
 
     def test_file_wins_and_gets_completed(self):
         with open(self.file, "w") as f:
-            json.dump({"timeout": 99, "model": "opus", "future": True, "compact_mb": -5}, f)
+            json.dump({"timeout": 99, "model": "haiku", "future": True, "compact_mb": -5, "engines": "[claude]"}, f)
         with self.env(NEXUS_TIMEOUT="600", NEXUS_USAGE_REFRESH="30"):
             settings.load()
         self.assertEqual(settings.get(settings.TIMEOUT.name), 99)  # файл сильнее .env
+        self.assertEqual(settings.get(settings.ENGINES.name), ["claude"])  # старая строка стала списком
+        self.assertEqual(settings.get(settings.CLAUDE_MODEL.name), "haiku")  # прежнее имя model перенесено
         self.assertEqual(settings.get(settings.USAGE_REFRESH.name), 30)  # недостающее — из .env
         self.assertEqual(settings.get(settings.COMPACT_MB.name), 10)  # отрицательное — по умолчанию
         stored = self.stored()
         self.assertEqual((stored["usage_refresh"], stored["future"]), (30, True))  # дописан, чужое не теряем
+        self.assertNotIn("model", stored)
 
     def test_set_saves_and_notifies(self):
         with self.env():
@@ -493,10 +496,8 @@ class GeneralSettings(unittest.TestCase):
         with self.assertRaises(KeyError):
             settings.set("nope", 1)
         with self.assertRaises(ValueError):  # только из списка
-            settings.set(settings.MODEL.name, "gpt")
-        self.assertEqual(settings.set(settings.MODEL.name, "opus"), "opus")
-        self.assertIn("Возможные значения: opus, sonnet, haiku.", settings.MODEL.description())
-        self.assertEqual(settings.TIMEOUT.description(), settings.TIMEOUT.about)  # без выбора — без списка
+            settings.set(settings.CLAUDE_MODEL.name, "gpt")
+        self.assertEqual(settings.set(settings.CLAUDE_MODEL.name, "opus"), "opus")
         settings.load()  # перечитали с диска — то же
         self.assertEqual(settings.get(settings.TIMEOUT.name), 120)
 
@@ -509,8 +510,17 @@ class GeneralSettings(unittest.TestCase):
         token = next(p for p in listing if p["name"] == "tg_token")
         self.assertTrue(token["secret"])
         self.assertEqual(token["title"], "Токен Telegram-бота")  # на экране — русское название
-        model = next(p for p in listing if p["name"] == settings.MODEL.name)
-        self.assertEqual(model["choices"], ["opus", "sonnet", "haiku"])
+        model = next(p for p in listing if p["name"] == settings.CLAUDE_MODEL.name)
+        self.assertEqual([c["value"] for c in model["choices"]], ["opus", "sonnet", "haiku"])
+        self.assertEqual(model["shown_if"], {"name": "engines", "value": "claude"})  # только при отмеченном Claude
+        self.assertNotIn("Возможные значения", model["about"])
+        engines = next(p for p in listing if p["name"] == settings.ENGINES.name)
+        self.assertEqual((engines["type"], engines["choices"][0]), ("list", {"value": "claude", "label": "Claude"}))
+        for bad in ([], ["gpt"]):  # хоть одна и только известные
+            with self.assertRaises(HTTPException):
+                asyncio.run(app.save_settings({"engines": bad}, admin))
+        result = asyncio.run(app.save_settings({"engines": ["codex"]}, admin))
+        self.assertEqual(next(p for p in result if p["name"] == "engines")["value"], ["codex"])
         self.assertEqual(next(p for p in listing if p["name"] == "timeout")["type"], "int")
         with self.assertRaises(HTTPException):  # одно плохое значение — не сохраняется ничего
             asyncio.run(app.save_settings({"stt_lang": "en", "timeout": "x"}, admin))
@@ -519,6 +529,25 @@ class GeneralSettings(unittest.TestCase):
             asyncio.run(app.save_settings({"nope": 1}, admin))
         result = asyncio.run(app.save_settings({"stt_lang": "en", "timeout": "300"}, admin))
         self.assertEqual(next(p for p in result if p["name"] == "timeout")["value"], 300)
+
+    def test_codex_model(self):
+        """Модель Codex — из каталога codex; новая беседа берёт модель по умолчанию своей сети."""
+        with self.env():
+            settings.load()
+        catalog = [{"slug": "gpt-a", "name": "GPT A", "about": "", "efforts": ["low"]},
+                   {"slug": "gpt-b", "name": "GPT B", "about": "", "efforts": ["low"]}]
+        with unittest.mock.patch.object(core, "codex_models", return_value=catalog), \
+                unittest.mock.patch.object(core, "CODEX_BIN", "/bin/true"):
+            choices = next(p for p in settings.listing() if p["name"] == "codex_model")["choices"]
+            self.assertEqual(choices, [{"value": "", "label": "Первая в каталоге Codex"},
+                                       {"value": "gpt-a", "label": "GPT A"}, {"value": "gpt-b", "label": "GPT B"}])
+            with self.assertRaises(ValueError):
+                settings.set(settings.CODEX_MODEL.name, "gpt-z")
+            self.assertEqual(jobs.new_chat(49, "codex")["model"], "gpt-a")  # пусто — первая
+            settings.set(settings.CODEX_MODEL.name, "gpt-b")
+            self.assertEqual(jobs.new_chat(49, "codex")["model"], "gpt-b")
+            settings.set(settings.CLAUDE_MODEL.name, "haiku")
+            self.assertEqual(jobs.new_chat(49, "claude")["model"], "haiku")
 
     def test_live_use(self):
         """Параметры читаются в момент использования: новое значение действует сразу."""
@@ -713,12 +742,12 @@ class Access(unittest.TestCase):
 
 class Engines(unittest.TestCase):
     def test_env_list(self):
-        for raw, expected in (("[claude]", ["claude"]), ("[claude, codex]", ["claude", "codex"]),
-                              ("[codex]", ["codex"])):
+        for raw, expected in ((["claude"], ["claude"]), (["codex", "claude"], ["claude", "codex"]),
+                              ("[codex]", ["codex"]), ("claude, codex", ["claude", "codex"])):
             settings.set(settings.ENGINES.name, raw)
             with unittest.mock.patch.object(core, "CODEX_BIN", "/bin/true"):
                 self.assertEqual(core.engines(), expected, raw)
-        settings.set(settings.ENGINES.name, "[claude, codex]")
+        settings.set(settings.ENGINES.name, ["claude", "codex"])
         with unittest.mock.patch.object(core, "CODEX_BIN", None):
             self.assertEqual(core.engines(), ["claude"])  # codex нет в системе
 
