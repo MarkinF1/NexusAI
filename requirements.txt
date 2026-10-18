@@ -5,3 +5,5 @@ aiogram>=3.15,<4
 faster-whisper>=1.1
 # faster-whisper 1.2.1 зовёт av.open(metadata_errors=...), в av 19 его убрали
 av<19
+# Web Push «Ответ готов» в браузер и веб-приложение iPhone
+pywebpush>=2,<3

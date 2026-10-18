@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 import core
 import jobs
+import push
 import session_files
 import settings
 import stt
@@ -182,6 +183,44 @@ def tg_link(user=Depends(current_user)):
     if not tg.bot_name:
         raise HTTPException(503, "Бот Telegram не запущен")
     return {"url": tg.link(user["id"])}
+
+
+# --- Уведомления Web Push («Ответ готов» на этом устройстве) ---
+
+@app.get("/api/push/key")
+def push_key(user=Depends(current_user)):
+    return {"key": push.public_key()}
+
+
+class PushSubscription(BaseModel):
+    subscription: dict
+    label: str = ""
+
+
+@app.post("/api/push")
+def push_subscribe(body: PushSubscription, user=Depends(current_user)):
+    try:
+        push.add(user["id"], body.subscription, body.label)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {}
+
+
+class PushEndpoint(BaseModel):
+    endpoint: str
+
+
+@app.post("/api/push/remove")
+def push_unsubscribe(body: PushEndpoint, user=Depends(current_user)):
+    push.remove(user["id"], body.endpoint)
+    return {}
+
+
+@app.post("/api/push/test")
+async def push_test(user=Depends(current_user)):
+    if not await push.notify(user["id"], "NexusAI", "Уведомления работают"):
+        raise HTTPException(502, "Не удалось отправить: проверьте, что уведомления включены")
+    return {}
 
 
 class TgPrefs(BaseModel):

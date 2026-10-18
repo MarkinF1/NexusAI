@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import core
+import push as web_push  # push() здесь — запись события в ленту
 import settings
 import usage
 import users
@@ -275,6 +276,10 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
             del jobs[key]
             save_busy()
             job.cond.notify_all()
-        if notify and not in_tg(meta) and not watchers[key]:
-            # Вкладку закрыли, не дождавшись: ответ готов — скажем в Telegram.
-            await notify(uid, f"Ответ готов: {meta['title'] or 'беседа без названия'}")
+        if not in_tg(meta) and not watchers[key]:
+            # Беседу никто не смотрит (вкладку закрыли или свернули): ответ готов — скажем
+            # в Telegram и пушем на устройства, где уведомления включены.
+            title = meta["title"] or "беседа без названия"
+            if notify:
+                await notify(uid, f"Ответ готов: {title}")
+            await web_push.notify(uid, "Ответ готов", title, "/#" + meta["id"])

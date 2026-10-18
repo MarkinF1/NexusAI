@@ -643,6 +643,61 @@ class CodexCompact(unittest.TestCase):
                 asyncio.run(collect(core.run(50, {**meta, "sid": ""}, "/compact", ALL, raw=True)))
 
 
+class WebPush(unittest.TestCase):
+    SUB = {"endpoint": "https://web.push.apple.com/abc", "keys": {"p256dh": "BPub", "auth": "secret"}}
+
+    def test_keys_and_subscriptions(self):
+        import push
+        key = push.public_key()
+        self.assertEqual(len(key), 87)  # точка P-256 без сжатия в base64url
+        self.assertEqual(push.public_key(), key)  # создаётся один раз
+        self.assertEqual(oct(os.stat(push.keys_path()).st_mode & 0o777), "0o600")
+        for bad in ({}, {"endpoint": "http://x", "keys": {"p256dh": "a", "auth": "b"}}, {"endpoint": "https://x"}):
+            with self.assertRaises(ValueError):
+                push.add(51, bad)
+        push.add(51, self.SUB, "iPhone")
+        push.add(51, self.SUB, "iPhone")  # то же устройство — одна запись
+        self.assertEqual([s["label"] for s in push.subscriptions(51)], ["iPhone"])
+        push.remove(51, self.SUB["endpoint"])
+        self.assertEqual(push.subscriptions(51), [])
+
+    def test_notify_drops_dead(self):
+        import push
+        alive = {**self.SUB, "endpoint": "https://fcm.googleapis.com/x"}
+        push.add(52, self.SUB)
+        push.add(52, alive)
+        sent = []
+
+        def fake(sub, payload):
+            sent.append((sub["endpoint"], payload["title"], payload["url"]))
+            return sub["endpoint"] == alive["endpoint"]  # Apple ответил 410 — подписки больше нет
+        with unittest.mock.patch.object(push, "_send", fake):
+            self.assertEqual(asyncio.run(push.notify(52, "Ответ готов", "Беседа", "/#c1")), 1)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual([s["endpoint"] for s in push.subscriptions(52)], [alive["endpoint"]])
+
+    def test_answer_ready(self):
+        """Ответ готов, а беседу никто не смотрит — пуш на устройства; смотрят — нет."""
+        meta = core.create_chat(53, "claude", "sonnet")
+        meta["title"] = "Про бананы"
+        calls = []
+
+        async def fake(uid, title, body, url="/"):
+            calls.append((uid, title, body, url))
+
+        async def go():
+            job = await jobs.start(53, meta, "привет", users.settings(53))
+            await job.task
+        with unittest.mock.patch("push.notify", fake):
+            asyncio.run(go())
+            jobs.watchers[(53, meta["id"])] += 1
+            try:
+                asyncio.run(go())
+            finally:
+                del jobs.watchers[(53, meta["id"])]
+        self.assertEqual(calls, [(53, "Ответ готов", "Про бананы", "/#" + meta["id"])])
+
+
 class Retry(unittest.TestCase):
     def test_visible(self):
         events = [{"kind": "user", "text": "a"}, {"kind": "text", "text": "1"}, {"kind": "done"},

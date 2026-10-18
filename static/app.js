@@ -102,6 +102,90 @@ function askShare(file) {
   box.showModal();
 }
 
+// --- Уведомления Web Push: «Ответ готов» на этом устройстве ---
+// На iPhone — только у сайта на экране «Домой» (iOS 16.4+) и только по https.
+
+const pushReady = "serviceWorker" in navigator && "PushManager" in window && window.isSecureContext;
+const swReady = pushReady ? navigator.serviceWorker.register("/sw.js").catch(() => null) : Promise.resolve(null);
+
+// Нажали на уведомление, а приложение уже открыто — переходим к беседе.
+if (pushReady) navigator.serviceWorker.addEventListener("message", (e) => {
+  const id = e.data?.open;
+  if (id && me) openChat(id);
+});
+
+function urlKey(b64) {
+  const raw = atob(b64.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - b64.length % 4) % 4));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  return /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android"
+    : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Браузер";
+}
+
+async function showPush() {
+  const box = $("#push-account");
+  const head = el("div", "push-head", "Уведомления «Ответ готов»");
+  const note = (text) => box.replaceChildren(head, el("div", "muted", text));
+  if (!pushReady) {
+    return note(!window.isSecureContext ? "Нужен вход на сайт по https."
+      : /iPhone|iPad/.test(navigator.userAgent) && !iosApp
+        ? "На iPhone — только из приложения: «Поделиться» → «На экран Домой» (iOS 16.4+)."
+        : "Этот браузер не поддерживает уведомления.");
+  }
+  if (Notification.permission === "denied") return note("Запрещены в настройках браузера или телефона.");
+  const reg = await swReady;
+  const sub = await reg?.pushManager.getSubscription();
+  const buttons = el("div", "actions");
+  if (sub) {
+    const test = el("button", "", "Проверить");
+    test.onclick = () => api("/api/push/test", { method: "POST" }).catch((err) => alert(err.message));
+    const off = el("button", "", "Выключить");
+    off.onclick = async () => {
+      try {
+        await api("/api/push/remove", { method: "POST", json: { endpoint: sub.endpoint } });
+        await sub.unsubscribe();
+      } catch (err) { alert(err.message); }
+      showPush();
+    };
+    buttons.append(test, off);
+    box.replaceChildren(head, el("div", "muted", "Включены на этом устройстве: придут, когда ответ готов, а беседа не открыта."), buttons);
+  } else {
+    const on = el("button", "", "Включить на этом устройстве");
+    on.onclick = async () => {
+      try {
+        // Разрешение — сразу по нажатию: после await iOS сочтёт запрос не пользовательским.
+        if (await Notification.requestPermission() !== "granted") return showPush();
+        const { key } = await api("/api/push/key");
+        const fresh = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
+        await api("/api/push", { method: "POST", json: { subscription: fresh.toJSON(), label: deviceName() } });
+      } catch (err) { alert(err.message); }
+      showPush();
+    };
+    buttons.append(on);
+    box.replaceChildren(head, buttons);
+  }
+}
+
+// Свёрнутая вкладка или приложение — не «смотрит» беседу: закрываем поток событий, чтобы
+// сервер прислал уведомление. Вернулись — перечитываем беседу и снова подключаемся.
+let resumeChat = null;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (stream && current) {
+      stream.close();
+      stream = null;
+      resumeChat = current.id;
+    }
+  } else if (resumeChat) {
+    const id = resumeChat;
+    resumeChat = null;
+    if (current?.id === id) openChat(id);
+  }
+});
+
 // --- Вход ---
 
 function showLogin() {
@@ -818,6 +902,41 @@ $("#file").onchange = (e) => {
   e.target.value = "";
   showAttachments();
 };
+
+// Перетаскивание файлов в беседу на компьютере: подсветка поля ввода и вложения как у 📎.
+let dragDepth = 0;
+const dragging = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+const canDrop = () => current && !$("#composer").hidden && !editing;
+
+$("#chat").addEventListener("dragenter", (e) => {
+  if (!dragging(e) || !canDrop()) return;
+  e.preventDefault();
+  dragDepth++;
+  $("#composer").classList.add("dropping");
+});
+$("#chat").addEventListener("dragover", (e) => {
+  if (!dragging(e) || !canDrop()) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+$("#chat").addEventListener("dragleave", (e) => {
+  if (!dragging(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $("#composer").classList.remove("dropping");
+});
+$("#chat").addEventListener("drop", (e) => {
+  if (!dragging(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $("#composer").classList.remove("dropping");
+  if (!canDrop()) return;
+  attachments.push(...e.dataTransfer.files);
+  showAttachments();
+  $("#text").focus();
+});
+// Мимо беседы браузер открыл бы файл вместо сайта.
+window.addEventListener("dragover", (e) => { if (dragging(e)) e.preventDefault(); });
+window.addEventListener("drop", (e) => { if (dragging(e)) e.preventDefault(); });
 
 $("#text").addEventListener("paste", (e) => {
   const files = [...e.clipboardData.files];
@@ -1861,6 +1980,7 @@ $("#settings-open").onclick = async () => {
   if (me.is_admin) await loadUsers();
   setLevel("list");
   $("#settings").showModal();
+  showPush();
 };
 
 api("/api/me").then((user) => { me = user; start(); }).catch(() => {});
