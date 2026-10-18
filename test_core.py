@@ -285,7 +285,7 @@ class Library(unittest.TestCase):
         self.assertEqual(start.await_args.args[2], "/compact")
         self.assertEqual(start.await_args.kwargs["shown"]["kind"], "compact")
         codex = core.create_chat(43, "codex", "gpt")
-        with self.assertRaises(HTTPException):
+        with self.assertRaises(HTTPException):  # у codex сессии ещё нет — сжимать нечего
             asyncio.run(app.compact(codex["id"], owner))
         self.assertFalse(app.chat_size(codex["id"], owner)["compactable"])
         events = list(core.claude_events({"type": "system", "subtype": "compact_boundary",
@@ -605,6 +605,42 @@ class Update(unittest.TestCase):
 
     def test_update_script(self):
         self.assertEqual(subprocess.run(["bash", "-n", os.path.join(core.HERE, "update.sh")]).returncode, 0)
+
+
+FAKE_CODEX = os.path.join(TMP, "fake-codex")
+with open(FAKE_CODEX, "w") as f:
+    # codex app-server: отвечает на resume и compact/start; FAKE_COMPACT=fail — сжатие не удалось.
+    f.write(f"""#!{sys.executable}
+import json, os, sys
+assert sys.argv[1] == "app-server"
+def out(m):
+    print(json.dumps(m), flush=True)
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("method") == "thread/resume":
+        out({{"id": m["id"], "result": {{"thread": {{"id": m["params"]["threadId"]}}}}}})
+    elif m.get("method") == "thread/compact/start":
+        out({{"id": m["id"], "result": {{}}}})
+        fail = os.environ.get("FAKE_COMPACT") == "fail"
+        if not fail:
+            out({{"method": "item/completed", "params": {{"item": {{"type": "contextCompaction"}}}}}})
+        out({{"method": "turn/completed", "params": {{"turn": {{"status": "failed" if fail else "completed",
+             "error": {{"message": "лимит"}} if fail else None}}}}}})
+""")
+os.chmod(FAKE_CODEX, 0o755)
+
+
+class CodexCompact(unittest.TestCase):
+    def test_compact(self):
+        meta = core.save_chat(50, {**core.create_chat(50, "codex", "gpt"), "sid": "thread-1"})
+        with unittest.mock.patch.object(core, "CODEX_BIN", FAKE_CODEX):
+            events = asyncio.run(collect(core.run(50, meta, "/compact", ALL, raw=True)))
+            self.assertEqual(events, [{"kind": "compacted", "tokens": 0, "auto": False}])
+            with unittest.mock.patch.dict(os.environ, {"FAKE_COMPACT": "fail"}), \
+                    self.assertRaisesRegex(RuntimeError, "лимит"):
+                asyncio.run(collect(core.run(50, meta, "/compact", ALL, raw=True)))
+            with self.assertRaises(RuntimeError):  # сессии нет — сжимать нечего
+                asyncio.run(collect(core.run(50, {**meta, "sid": ""}, "/compact", ALL, raw=True)))
 
 
 class Retry(unittest.TestCase):

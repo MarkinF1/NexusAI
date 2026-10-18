@@ -140,21 +140,18 @@ def save_busy():
 
 
 def compact_due(uid, meta):
-    """(размер, порог), если беседу Claude пора предложить сжать; иначе None."""
-    if meta["engine"] != "claude":
-        return None
+    """(размер, порог), если беседу пора предложить сжать; иначе None."""
     limit = users.settings(uid)["compact_mb"] * 2 ** 20
     size = core.chat_size(uid, meta)["context"] if limit else 0
     return (size, limit) if limit and size > limit else None
 
 
 async def compact(uid, meta, channel="web"):
-    """«Сжать беседу»: claude заменяет старую часть сессии кратким содержанием (/compact).
-    Идёт как обычный ответ — с лимитами подписки и событиями в ленте. Нельзя — Refused."""
+    """«Сжать беседу»: модель заменяет старую часть сессии кратким содержанием (claude —
+    /compact, codex — через app-server, см. core.codex_compact). Идёт как обычный ответ —
+    с лимитами подписки и событиями в ленте. Нельзя — Refused."""
     if draining():
         raise Refused(503, UPDATING)
-    if meta["engine"] != "claude":
-        raise Refused(400, "Сжимать беседу умеет только Claude: Codex делает это сам")
     if not core.chat_size(uid, meta)["context"]:
         raise Refused(400, "Сжимать пока нечего")
     data = check(uid, meta)

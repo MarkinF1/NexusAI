@@ -812,6 +812,10 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
     rewind — флаги отката claude от rewind(): ответ заново на последний запрос.
     """
     cwd = workspace(uid, meta["id"])
+    if raw and text == "/compact" and meta["engine"] == "codex":
+        async for event in codex_compact(uid, meta, cwd, on_proc):
+            yield event
+        return
     prompt = text if raw else file_prompt(cwd, text)
     images = fit_images(images)
     files = []
@@ -966,6 +970,69 @@ def search(uid, query, limit=50):
         if len(found) >= limit:
             break
     return found
+
+
+async def codex_compact(uid, meta, cwd, on_proc):
+    """«Сжать беседу» у codex: в codex exec сжатия нет, оно есть в codex app-server
+    (JSON-RPC по stdin/stdout): thread/resume и thread/compact/start. Отметка compacted
+    ложится в тот же журнал сессии, дальше беседа идёт через codex exec как обычно.
+    ponytail: app-server у codex помечен экспериментальным — протокол может смениться."""
+    if not CODEX_BIN:
+        raise RuntimeError("codex не установлен")
+    if not meta["sid"]:
+        raise RuntimeError("Сжимать пока нечего")
+    proc = await asyncio.create_subprocess_exec(
+        CODEX_BIN, "app-server", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, cwd=cwd, env=model_env(CODEX_HOME=codex_home(uid)),
+        start_new_session=True, limit=LINE_LIMIT)
+    on_proc(proc)
+
+    def send(message):
+        proc.stdin.write((json.dumps(message) + "\n").encode())
+
+    timeout = settings.get(settings.TIMEOUT.name)
+    deadline = time.monotonic() + timeout
+    send({"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "nexus", "version": "1"}}})
+    send({"method": "initialized"})
+    # Сжатие инструментов не запускает: песочница — только чтение, без вопросов.
+    send({"id": 1, "method": "thread/resume", "params": {
+        "threadId": meta["sid"], "model": meta["model"], "cwd": cwd, "sandbox": "read-only",
+        "approvalPolicy": "never", "excludeTurns": True}})
+    said = False
+    try:
+        await proc.stdin.drain()
+        while True:
+            try:
+                line = await asyncio.wait_for(proc.stdout.readline(), deadline - time.monotonic())
+            except TimeoutError:
+                raise RuntimeError(f"Сжатие идёт дольше {max(1, timeout // 60)} мин — остановлено") from None
+            if not line:
+                raise RuntimeError("codex app-server завершился до конца сжатия")
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("error"):
+                raise RuntimeError(msg["error"].get("message") or "ошибка codex app-server")
+            if msg.get("id") == 1:
+                send({"id": 2, "method": "thread/compact/start", "params": {"threadId": meta["sid"]}})
+                await proc.stdin.drain()
+                continue
+            method, params = msg.get("method", ""), msg.get("params") or {}
+            item = params.get("item") or {}
+            if method == "item/completed" and item.get("type") == "contextCompaction" and not said:
+                said = True
+                yield {"kind": "compacted", "tokens": 0, "auto": False}
+            elif method == "turn/completed":
+                turn = params.get("turn") or {}
+                if turn.get("status") != "completed":
+                    raise RuntimeError((turn.get("error") or {}).get("message") or "codex не сжал беседу")
+                if not said:
+                    yield {"kind": "compacted", "tokens": 0, "auto": False}
+                return
+    finally:
+        stop(proc)
+        await proc.wait()
 
 
 def stop(proc):

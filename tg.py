@@ -552,7 +552,7 @@ async def download_attachment(uid, message, cwd):
 
 
 def compact_kb(uid, meta):
-    """Кнопка «Сжать беседу», если сессия Claude больше порога пользователя."""
+    """Кнопка «Сжать беседу», если сессия больше порога пользователя."""
     due = jobs.compact_due(uid, meta)
     if not due:
         return None

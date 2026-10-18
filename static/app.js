@@ -228,7 +228,7 @@ function showLimits() {
 let compactOffer = false;  // сессия открытой беседы больше порога сжатия
 
 $("#compact").onclick = async () => {
-  if (!confirm("Сжать беседу? Claude заменит старую часть разговора кратким содержанием — "
+  if (!confirm(`Сжать беседу? ${NAME[current.engine]} заменит старую часть разговора кратким содержанием — `
     + "подробности оттуда модель забудет. Переписка на сайте останется.")) return;
   try {
     await api(`/api/chats/${current.id}/compact`, { method: "POST" });
@@ -633,7 +633,7 @@ function render(ev) {
     node = el("div", "msg-note", "Сжатие беседы…");
   } else if (ev.kind === "compacted") {
     const was = ev.tokens ? `: было ≈${Math.round(ev.tokens / 1000).toLocaleString("ru")} тыс. токенов` : "";
-    node = el("div", "msg-note", (ev.auto ? "Claude сам сжал беседу" : "Беседа сжата") + was);
+    node = el("div", "msg-note", (ev.auto ? `${NAME[current.engine]} сам сжал беседу` : "Беседа сжата") + was);
   } else if (ev.kind === "stopped") {
     node = el("div", "msg-note", "Остановлено");
   } else if (ev.kind === "voice") {

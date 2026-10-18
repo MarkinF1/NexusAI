@@ -274,7 +274,7 @@ def chat_size(chat: str, user=Depends(current_user)):
     meta = own_chat(user, chat)
     size = core.chat_size(user["id"], meta)
     return {**size, "limit": users.settings(user["id"])["compact_mb"] * 2 ** 20,
-            "compactable": meta["engine"] == "claude" and size["context"] > 0}
+            "compactable": size["context"] > 0}
 
 
 @app.post("/api/chats/{chat}/compact")
