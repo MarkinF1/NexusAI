@@ -1179,6 +1179,35 @@ class Permissions(unittest.TestCase):
         self.assertFalse(conf["permissions"]["chat"]["network"]["enabled"])
         self.assertEqual(conf["web_search"], "disabled")
 
+    def test_codex_unsandboxed(self):
+        rules = os.path.join(core.codex_home(3), "rules", "nexus.rules")
+        conf = self.codex_settings()
+        # Папка беседы — недоверенная: правила из её .codex модель подложила бы сама.
+        self.assertEqual(conf["projects"], {self.cwd: {"trust_level": "untrusted"}})
+        self.assertEqual(conf["project_root_markers"], [])
+        self.assertFalse(os.path.exists(rules))
+        # Без галочки или без «Запуска команд» список не действует.
+        self.codex_settings(unsandboxed_commands=["ls -la"])
+        self.assertFalse(os.path.exists(rules))
+        self.codex_settings(unsandboxed=True, unsandboxed_commands=["ls -la"], bash=False)
+        self.assertFalse(os.path.exists(rules))
+        with open(os.path.join(os.path.dirname(rules), "default.rules"), "w") as f:
+            f.write('prefix_rule(pattern=["sh"])\n')
+        self.codex_settings(unsandboxed=True, unsandboxed_commands=["ls -la", "git log 'a b'"])
+        with open(rules) as f:
+            text = f.read()
+        self.assertIn('prefix_rule(pattern=["ls", "-la"], decision="allow")', text)
+        self.assertIn('prefix_rule(pattern=["git", "log", "a b"], decision="allow")', text)
+        self.assertIn('host_executable(name="ls", paths=', text)  # свой «ls» по абсолютному пути не пройдёт
+        self.assertEqual(os.listdir(os.path.dirname(rules)), ["nexus.rules"])
+        self.codex_settings(unsandboxed=False, unsandboxed_commands=["ls -la"])
+        self.assertFalse(os.path.exists(rules))
+        self.assertEqual(users.clean({"access": {"codex": {"unsandboxed_commands": [" docker  ps "]}}})
+                         ["access"]["codex"]["unsandboxed_commands"], ["docker ps"])
+        for bad in ("docker *", "echo 'a"):
+            with self.assertRaises(ValueError):
+                users.clean({"access": {"codex": {"unsandboxed_commands": [bad]}}})
+
 
 class Settings(unittest.TestCase):
     def test_available(self):

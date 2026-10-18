@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import time
 
@@ -27,11 +28,11 @@ ACCESS = {"claude": {"bash": True, "write": True, "memory": True, "network": Tru
                      "unsandboxed": False, "skills": True},
           "codex": {"bash": True, "write": True, "memory": True, "network": True,
                     "web": True, "web_cached": False, "all_chats": True,
-                    "multi_agent": True, "site_allow": False, "site_deny": False}}
+                    "multi_agent": True, "site_allow": False, "site_deny": False, "unsandboxed": False}}
 # Списки к галочкам site_allow, site_deny, commands и unsandboxed; skills_off — снятые скиллы.
 LISTS = {"claude": ("allowed_sites", "denied_sites", "allowed_commands", "denied_commands",
                     "unsandboxed_commands", "skills_off"),
-         "codex": ("allowed_sites", "denied_sites")}
+         "codex": ("allowed_sites", "denied_sites", "unsandboxed_commands")}
 SITE = re.compile(r"(\*\.)?([a-z0-9-]+\.)*[a-z0-9-]+")
 
 
@@ -306,7 +307,8 @@ def engine_access(access, engine):
     if engine == "codex" and not result["write"]:
         result["memory"] = False  # CLI не поддерживает writable-root в виде отдельного файла
     for key in LISTS[engine]:
-        check = site if key.endswith("sites") else skill if key == "skills_off" else command
+        check = (site if key.endswith("sites") else skill if key == "skills_off"
+                 else codex_command if engine == "codex" else command)
         result[key] = [check(v) for v in conf.get(key) or [] if str(v).strip()]
     return result
 
@@ -335,6 +337,18 @@ def command(value):
     # Скобки закрыли бы правило Bash(...) раньше времени.
     if len(value) > 200 or "(" in value or ")" in value:
         raise ValueError(f"Команда должна быть без скобок и короче 200 знаков: {value}")
+    return value
+
+
+def codex_command(value):
+    """У codex правило — начало команды по словам: без звёздочек, кавычки закрыты."""
+    value = command(value)
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        words = []
+    if not words or "*" in value:
+        raise ValueError(f"Команда для Codex — без звёздочек и с закрытыми кавычками: {value}")
     return value
 
 

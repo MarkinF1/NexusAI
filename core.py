@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -753,10 +754,50 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         ["--resume-session-at", rewind["at"], "--resume-drops-turn", rewind["drop"]] if rewind and found else [])
 
 
+def codex_untrusted(cwd):
+    """codex сам помечает рабочую папку доверенной и тогда берёт из её .codex правила
+    команд, хуки и настройки: модель с правом записи положила бы туда правило и вышла
+    из песочницы. Корень проекта — сама папка, и она явно недоверенная."""
+    return ["-c", "project_root_markers=[]",
+            "-c", "projects={%s={trust_level=\"untrusted\"}}" % json.dumps(cwd)]
+
+
+def codex_rules(uid, commands):
+    """Команды вне песочницы у codex — правила allow в rules/ его папки (её модель не
+    видит). Наружу команда выходит, только если разрешена каждая её часть; лишние
+    аргументы правилу не мешают. host_executable не даёт подсунуть свой «docker»
+    абсолютным путём: совпадает только настоящая программа из PATH."""
+    folder = os.path.join(codex_home(uid), "rules")
+    os.makedirs(folder, exist_ok=True)
+    for old in glob.glob(os.path.join(folder, "*.rules")):
+        if os.path.basename(old) != "nexus.rules":
+            os.remove(old)  # одобрения codex сюда не пишет (approval never), чужое не держим
+    target = os.path.join(folder, "nexus.rules")
+    if not commands:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(target)
+        return
+    lines, programs = [], {}
+    for command in commands:
+        tokens = shlex.split(command)
+        lines.append(f"prefix_rule(pattern={json.dumps(tokens, ensure_ascii=False)}, decision=\"allow\")")
+        if not tokens[0].startswith("/"):
+            found = shutil.which(tokens[0])
+            programs[tokens[0]] = sorted({found, os.path.realpath(found)}) if found else []
+    lines += [f"host_executable(name={json.dumps(name, ensure_ascii=False)}, paths={json.dumps(paths, ensure_ascii=False)})"
+              for name, paths in programs.items()]
+    tmp = f"{target}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, target)
+
+
 def codex_args(uid, meta, cwd, files, access, channel="web"):
     """Права Codex CLI: инструменты, файловая песочница и сеть команд."""
     args = [CODEX_BIN, "exec", "-C", cwd] + (["resume", meta["sid"]] if meta["sid"] else []) + [
-        "--json", "--skip-git-repo-check", "-m", meta["model"]]
+        "--json", "--skip-git-repo-check", "-m", meta["model"]] + codex_untrusted(cwd)
+    # Опасная зона: эти команды идут мимо песочницы с правами хозяина сервера.
+    codex_rules(uid, access["unsandboxed_commands"] if access["bash"] and access["unsandboxed"] else [])
     if meta["effort"]:
         args += ["-c", f'model_reasoning_effort="{meta["effort"]}"']
     mode = "write" if access["write"] else "read"
@@ -983,7 +1024,7 @@ async def codex_compact(uid, meta, cwd, on_proc):
     if not meta["sid"]:
         raise RuntimeError("Сжимать пока нечего")
     proc = await asyncio.create_subprocess_exec(
-        CODEX_BIN, "app-server", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        CODEX_BIN, "app-server", *codex_untrusted(cwd), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, cwd=cwd, env=model_env(CODEX_HOME=codex_home(uid)),
         start_new_session=True, limit=LINE_LIMIT)
     on_proc(proc)
