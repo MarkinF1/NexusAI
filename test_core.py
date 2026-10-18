@@ -511,6 +511,35 @@ class Thumbnails(unittest.TestCase):
         thumbs.sweep(folder)
         self.assertEqual(list(folder.iterdir()), [])
 
+    def test_large_and_office(self):
+        from PIL import Image
+        import thumbs
+        owner = {"id": 38, "is_admin": False}
+        library = core.library(38)
+        self.photo(os.path.join(library, "big.jpg"))
+        small = app.library_thumb("big.jpg", owner)
+        large = app.library_thumb("big.jpg", owner, size=thumbs.LARGE)
+        with Image.open(large.path) as image:
+            self.assertEqual(image.size, (1600, 1067))  # окно просмотра: крупнее плитки
+        self.assertTrue(os.path.exists(small.path))  # оба размера живут рядом
+        with self.assertRaises(HTTPException) as err:
+            app.library_thumb("big.jpg", owner, size=5000)  # произвольный размер не делаем
+        self.assertEqual(err.exception.status_code, 415)
+        with open(os.path.join(library, "notes.txt"), "w") as f:
+            f.write("текст")
+        with self.assertRaises(HTTPException) as err:
+            app.library_preview("notes.txt", owner)
+        self.assertEqual(err.exception.status_code, 415)
+        if not thumbs.SOFFICE:
+            self.skipTest("нет LibreOffice")
+        with open(os.path.join(library, "doc.rtf"), "w") as f:
+            f.write(r"{\rtf1\ansi Hello from NexusAI\par}")
+        pdf = app.library_preview("doc.rtf", owner)
+        self.assertEqual(pdf.media_type, "application/pdf")
+        with open(pdf.path, "rb") as f:
+            self.assertEqual(f.read(5), b"%PDF-")
+        self.assertEqual(app.library_preview("doc.rtf", owner).path, pdf.path)  # второй раз из кэша
+
 
 class Voice(unittest.TestCase):
     def upload(self, body=b"OggS-voice", mime="audio/webm;codecs=opus"):

@@ -65,13 +65,25 @@ function saveFile(url, name) {
   a.remove();
 }
 
-function fileLink(path) {
+// Файл беседы открывается в окне просмотра; Ctrl/⌘-щелчок — как обычная ссылка.
+function fileLink(path, f) {
   const name = path.split("/").pop();
   const a = el("a", "chip file", name);
   a.href = `/api/chats/${current.id}/file?path=${encodeURIComponent(path)}`;
   a.download = "";
-  if (iosApp) a.onclick = (e) => { e.preventDefault(); shareFile(a.href, name); };
+  a.onclick = (e) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+    e.preventDefault();
+    viewChatFile(path, f);
+  };
   return a;
+}
+
+function viewChatFile(path, f) {
+  const base = `/api/chats/${current.id}`, q = `?path=${encodeURIComponent(path)}`;
+  const v = `&v=${f?.mtime ? Math.round(f.mtime * 1000) : Date.now()}`;  // копии на сервере — по версии файла
+  viewFile({ name: baseName(path), url: `${base}/file${q}`, large: `${base}/thumb${q}&size=1600${v}`,
+    preview: `${base}/preview${q}${v}`, size: f?.size });
 }
 
 async function shareFile(url, name) {
@@ -92,6 +104,233 @@ async function shareFile(url, name) {
     else if (err.name !== "AbortError") alert(err.message);
   }
 }
+
+// --- Окно просмотра файла ---
+// Во весь экран: сверху «Назад» и имя, снизу «Поделиться» (и «Скачать» на компьютере).
+// Картинки, PDF, документы Office (PDF с сервера), Markdown, JSON, таблицы CSV, текст и
+// код, аудио и видео; остальное — значок файла.
+
+const VIEW_IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg|heic|heif|tiff?)$/i;
+const VIEW_OFFICE = /\.(docx?|odt|rtf|xlsx?|ods|pptx?|odp)$/i;
+const VIEW_AUDIO = /\.(mp3|m4a|ogg|oga|opus|wav|flac|aac)$/i;
+const VIEW_VIDEO = /\.(mp4|m4v|mov|webm|mkv)$/i;
+const VIEW_TEXT = /\.(txt|text|log|md|markdown|json|jsonl|ndjson|csv|tsv|py|pyw|js|mjs|cjs|ts|jsx|tsx|html?|css|scss|less|xml|svg|ya?ml|toml|ini|cfg|conf|env|sh|bash|zsh|fish|ps1|bat|cmd|sql|c|cc|cpp|cxx|h|hh|hpp|cs|java|kt|kts|go|rs|rb|php|pl|lua|r|swift|dart|scala|vue|svelte|pro|pri|ui|qml|cmake|mk|gradle|properties|srt|vtt|tex|bib|diff|patch|gitignore|dockerfile|makefile)$/i;
+const VIEW_TEXT_MAX = 5 * 2 ** 20;  // больше — тяжело для телефона, только «Поделиться»
+const canShareFiles = !!navigator.canShare?.({ files: [new File([""], "a.txt", { type: "text/plain" })] });
+
+let viewing = null;  // { token, cleanup } открытого файла
+
+function viewKind(name) {
+  if (/\.svg$/i.test(name)) return "image";  // SVG — картинкой, текстом его не смотрят
+  if (VIEW_IMAGE.test(name)) return "image";
+  if (/\.pdf$/i.test(name)) return "pdf";
+  if (VIEW_OFFICE.test(name)) return "office";
+  if (/\.(md|markdown)$/i.test(name)) return "markdown";
+  if (/\.json$/i.test(name)) return "json";
+  if (/\.(csv|tsv)$/i.test(name)) return "table";
+  if (VIEW_AUDIO.test(name)) return "audio";
+  if (VIEW_VIDEO.test(name)) return "video";
+  if (VIEW_TEXT.test(name) || /^(dockerfile|makefile|readme|license)$/i.test(name)) return "text";
+  return "other";
+}
+
+// file: { name, url — содержимое, download — для «Поделиться»/«Скачать»,
+//         large — крупная копия фото (HEIC, TIFF), preview — PDF документа Office, size }
+function viewFile(file) {
+  closeViewer();
+  const dialog = $("#viewer");
+  const token = {};
+  viewing = { token, cleanup: [] };
+  $("#viewer-name").textContent = file.name;
+  $("#viewer-name").title = file.name;
+  const share = $("#viewer-share"), download = $("#viewer-download");
+  share.hidden = !iosApp && !canShareFiles;
+  download.hidden = iosApp;
+  share.onclick = () => shareFile(file.download || file.url, file.name);
+  download.onclick = () => saveFile(file.download || file.url, file.name);
+  const body = $("#viewer-body");
+  body.className = "";
+  body.replaceChildren(el("div", "viewer-wait muted", "Загрузка…"));
+  dialog.showModal();
+  dialog.scrollTop = 0;
+  const kind = viewKind(file.name);
+  body.dataset.kind = kind;
+  const live = () => viewing?.token === token;
+  const fail = (note) => { if (live()) viewIcon(body, file, note); };
+  const shows = {
+    image: () => viewImage(body, file, fail),
+    pdf: () => viewPdf(body, file.url, live, fail),
+    office: () => file.preview ? viewPdf(body, file.preview, live, () => fail("Предпросмотр этого документа недоступен"))
+      : fail(),
+    audio: () => viewMedia(body, "audio", file.url, fail),
+    video: () => viewMedia(body, "video", file.url, fail),
+    markdown: () => viewText(body, file, live, fail, (text) => {
+      const div = el("div", "viewer-doc msg-text");
+      div.innerHTML = DOMPurify.sanitize(marked.parse(text));
+      div.querySelectorAll("a[href]").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
+      return div;
+    }),
+    json: () => viewText(body, file, live, fail, (text) => {
+      try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* битый JSON — как есть */ }
+      return el("pre", "viewer-code", text);
+    }),
+    table: () => viewText(body, file, live, fail, (text) => csvTable(text, /\.tsv$/i.test(file.name) ? "\t" : null)),
+    text: () => viewText(body, file, live, fail, (text) => el("pre", "viewer-code", text)),
+    other: () => fail(),
+  };
+  shows[kind]();
+}
+
+function closeViewer() {
+  if (!viewing) return;
+  for (const done of viewing.cleanup) { try { done(); } catch { /* уже закрыто */ } }
+  viewing = null;
+  const body = $("#viewer-body");
+  body.querySelectorAll("video, audio").forEach((m) => { m.pause(); m.removeAttribute("src"); m.load(); });
+  body.replaceChildren();
+}
+
+function viewIcon(body, file, note) {
+  const box = el("div", "viewer-icon");
+  const ext = file.name.includes(".") ? file.name.split(".").pop().slice(0, 5).toUpperCase() : "";
+  const icon = el("span", "file-thumb");
+  icon.innerHTML = '<svg width="72" height="72"><use href="#i-file"/></svg>';
+  if (ext) icon.append(el("span", "file-ext", ext));
+  box.append(icon, el("div", "viewer-icon-name", file.name));
+  if (file.size !== undefined) box.append(el("div", "muted", size(file.size)));
+  const how = $("#viewer-share").hidden ? "Скачайте его и откройте в другом приложении." : "Откройте его через «Поделиться» в другом приложении.";
+  box.append(el("p", "muted", note || "Этот формат здесь не показать. " + how));
+  body.className = "";
+  body.replaceChildren(box);
+}
+
+function viewImage(body, file, fail) {
+  const img = el("img", "viewer-image");
+  img.alt = file.name;
+  img.decoding = "async";
+  let tried = false;
+  img.onerror = () => {
+    // HEIC и TIFF браузер не показывает — берём крупную копию с сервера.
+    if (!tried && file.large) { tried = true; img.src = file.large; } else fail();
+  };
+  img.onload = () => body.replaceChildren(img);
+  // Нажатие — в натуральную величину и обратно; крупное фото тогда прокручивается.
+  img.onclick = () => body.classList.toggle("zoomed");
+  img.src = file.url;
+}
+
+function viewMedia(body, tag, url, fail) {
+  const media = el(tag, "viewer-" + tag);
+  media.controls = true;
+  media.playsInline = true;
+  media.preload = "metadata";
+  media.onerror = () => fail("Браузер не умеет проигрывать этот формат");
+  media.src = url;
+  body.replaceChildren(media);
+}
+
+async function viewText(body, file, live, fail, render) {
+  let text;
+  try {
+    const r = await fetch(file.url);
+    if (r.status === 401) { closeViewer(); $("#viewer").close(); showLogin(); return; }
+    if (!r.ok) throw new Error(r.status);
+    const length = +r.headers.get("content-length");
+    if (length > VIEW_TEXT_MAX) return fail(`Файл большой (${size(length)}) для просмотра здесь.`);
+    const bytes = await r.arrayBuffer();
+    if (bytes.byteLength > VIEW_TEXT_MAX) return fail(`Файл большой (${size(bytes.byteLength)}) для просмотра здесь.`);
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      text = new TextDecoder("windows-1251").decode(bytes);  // старые файлы из Windows
+    }
+  } catch { return fail("Не удалось загрузить файл"); }
+  if (!live()) return;
+  body.replaceChildren(render(text));
+}
+
+// CSV/TSV: разделитель — то, чего в первой строке больше; кавычки по RFC 4180.
+function csvTable(text, sep) {
+  const first = text.slice(0, text.indexOf("\n") + 1 || undefined);
+  sep ||= [",", ";", "\t"].map((s) => [s, first.split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = [];
+  let row = [], cell = "", quoted = false;
+  for (let i = 0; i < text.length && rows.length <= 2000; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') quoted = false; else cell += c;
+    } else if (c === '"' && !cell) quoted = true;
+    else if (c === sep) { row.push(cell); cell = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    } else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  const wrap = el("div", "viewer-doc msg-text");
+  const table = el("table");
+  rows.slice(0, 2000).forEach((cells, i) => {
+    const tr = el("tr");
+    cells.forEach((v) => tr.append(el(i ? "td" : "th", "", v)));
+    table.append(tr);
+  });
+  wrap.append(table);
+  if (rows.length > 2000) wrap.append(el("p", "muted", "Показаны первые 2000 строк"));
+  return wrap;
+}
+
+// PDF — через pdf.js: встроенный просмотрщик в окне сайта есть не везде (iPhone).
+// Страницы рисуются, когда доходят до экрана.
+let pdfjs = null;
+async function viewPdf(body, url, live, fail) {
+  let doc;
+  try {
+    if (!pdfjs) {
+      pdfjs = await import("/vendor/pdfjs/pdf.min.mjs");
+      pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
+    }
+    const task = pdfjs.getDocument({ url, isEvalSupported: false, cMapUrl: "/vendor/pdfjs/cmaps/",
+      cMapPacked: true, standardFontDataUrl: "/vendor/pdfjs/standard_fonts/" });
+    viewing?.cleanup.push(() => task.destroy());
+    doc = await task.promise;
+  } catch (err) {
+    if (err?.name === "PasswordException") return fail("PDF защищён паролем — здесь его не открыть.");
+    return fail("Не удалось открыть PDF");
+  }
+  if (!live()) return;
+  const pages = el("div", "viewer-pages");
+  body.replaceChildren(pages);
+  const first = (await doc.getPage(1)).getViewport({ scale: 1 });
+  const observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { observer.unobserve(e.target); drawPage(doc, e.target, live); }
+  }, { root: body, rootMargin: "100% 0px" });
+  viewing.cleanup.push(() => observer.disconnect());
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = el("div", "viewer-page");
+    page.dataset.page = n;
+    page.style.aspectRatio = `${first.width} / ${first.height}`;  // до отрисовки — по первой странице
+    pages.append(page);
+    observer.observe(page);
+  }
+}
+
+async function drawPage(doc, holder, live) {
+  const page = await doc.getPage(+holder.dataset.page);
+  if (!live()) return;
+  const base = page.getViewport({ scale: 1 });
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const viewport = page.getViewport({ scale: (holder.clientWidth / base.width) * ratio });
+  const canvas = el("canvas");
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  holder.style.aspectRatio = `${base.width} / ${base.height}`;
+  holder.replaceChildren(canvas);
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise.catch(() => {});
+}
+
+// Событие close приходит позже: если окно уже открыли снова с другим файлом, его не трогаем.
+$("#viewer").addEventListener("close", () => { if (!$("#viewer").open) closeViewer(); });
+$("#viewer-back").onclick = () => $("#viewer").close();
 
 function askShare(file) {
   const box = $("#file-share");
@@ -1373,7 +1612,7 @@ function fillTile(a, name, src) {
 
 // Папка (general, for_user…) — во всплывающей подсказке.
 function fileTile(f) {
-  const a = fileLink(f.path);
+  const a = fileLink(f.path, f);
   a.className = "";
   a.title = f.path.replace(/^files\//, "");
   return fillTile(a, a.textContent, thumbUrl(`/api/chats/${current.id}`, f.path, f.mtime, a.href));
@@ -1557,7 +1796,7 @@ const chatFiles = fileBrowser("files", {
 $("#export").onclick = () => {
   // Имя — как у сервера: название беседы без недопустимых в именах файлов знаков.
   const name = (current.title || "Беседа").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
-  saveFile(`/api/chats/${current.id}/export`, name + ".md");
+  viewFile({ name: name + ".md", url: `/api/chats/${current.id}/export` });
 };
 
 $("#files-open").onclick = async () => {
@@ -1585,6 +1824,13 @@ const library = fileBrowser("library", {
     open.target = "_blank";
     open.rel = "noopener";
     open.title = f.path;
+    open.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      const q = `?path=${encodeURIComponent(f.path)}`, v = `&v=${Math.round(f.mtime * 1000)}`;
+      viewFile({ name, url: libraryUrl(f.path), download: libraryUrl(f.path, true),
+        large: `/api/library/thumb${q}&size=1600${v}`, preview: `/api/library/preview${q}${v}`, size: f.size });
+    };
     fillTile(open, name, thumbUrl("/api/library", f.path, f.mtime, libraryUrl(f.path)));
     const chats = el("div", "file-chats");
     if (!f.chats.length) chats.append(el("span", "muted", "без беседы"));
@@ -1609,8 +1855,7 @@ const library = fileBrowser("library", {
     get.setAttribute("aria-label", "Скачать " + name);
     get.innerHTML = '<svg width="16" height="16"><use href="#i-download"/></svg>';
     if (iosApp) {
-      const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), name); };
-      open.onclick = get.onclick = share;
+      get.onclick = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), name); };
     }
     const day = new Date(f.mtime * 1000).toLocaleDateString("ru", { day: "2-digit", month: "2-digit", year: "2-digit" });
     const info = el("span", "", `${size(f.size)} · ${day}`);

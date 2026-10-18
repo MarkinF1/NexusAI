@@ -575,21 +575,38 @@ def get_file(chat: str, path: str, user=Depends(current_user)):
     return FileResponse(target, filename=target.name)
 
 
-def thumb_response(user, target):
+def thumb_response(user, target, size=thumbs.SIZE):
     """Миниатюра фото вместо оригинала. В адресе — время изменения файла (v=), поэтому
     браузер держит её в кэше, пока файл не заменят. 415 — не картинка: плитка
-    покажет значок."""
+    покажет значок. size=1600 — для окна просмотра (HEIC, TIFF)."""
     try:
-        path = thumbs.thumbnail(Path(core.user_dir(user["id"])) / "thumbs", target)
+        path = thumbs.thumbnail(Path(core.user_dir(user["id"])) / "thumbs", target, size)
     except thumbs.Unsupported:
         raise HTTPException(415, "Нет миниатюры")
     return FileResponse(path, media_type=thumbs.MEDIA,
                         headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
+def preview_response(user, target):
+    """Документ Office как PDF для окна просмотра. 415 — нет LibreOffice или не вышло:
+    окно покажет значок."""
+    try:
+        path = thumbs.office_pdf(Path(core.user_dir(user["id"])) / "thumbs", target,
+                                 os.path.join(core.DATA, "lo-profile"))
+    except thumbs.Unsupported:
+        raise HTTPException(415, "Нет предпросмотра")
+    return FileResponse(path, media_type="application/pdf",
+                        headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
 @app.get("/api/chats/{chat}/thumb")
-def chat_thumb(chat: str, path: str, user=Depends(current_user)):
-    return thumb_response(user, chat_file_target(user, chat, path))
+def chat_thumb(chat: str, path: str, user=Depends(current_user), size: int = thumbs.SIZE):
+    return thumb_response(user, chat_file_target(user, chat, path), size)
+
+
+@app.get("/api/chats/{chat}/preview")
+def chat_preview(chat: str, path: str, user=Depends(current_user)):
+    return preview_response(user, chat_file_target(user, chat, path))
 
 
 class FilePaths(BaseModel):
@@ -646,8 +663,13 @@ def library_target(user, path):
 
 
 @app.get("/api/library/thumb")
-def library_thumb(path: str, user=Depends(current_user)):
-    return thumb_response(user, library_target(user, path))
+def library_thumb(path: str, user=Depends(current_user), size: int = thumbs.SIZE):
+    return thumb_response(user, library_target(user, path), size)
+
+
+@app.get("/api/library/preview")
+def library_preview(path: str, user=Depends(current_user)):
+    return preview_response(user, library_target(user, path))
 
 
 @app.get("/api/library/file")

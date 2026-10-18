@@ -435,6 +435,38 @@ dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 }
 #file-share-name { word-break: break-all; }
 
+/* Окно просмотра файла: во весь экран, сверху имя и «Назад», снизу «Поделиться» */
+#viewer {
+  width: 100%; height: 100%; max-width: 100%; max-height: 100%; margin: 0; padding: 0;
+  border: 0; border-radius: 0; box-shadow: none; background: var(--paper);
+}
+#viewer[open] { display: flex; flex-direction: column; }
+.viewer-bar { display: flex; align-items: center; gap: 8px; background: var(--sheet); flex: none; }
+.viewer-top { padding: calc(6px + env(safe-area-inset-top)) 16px 6px 6px; border-bottom: 1px solid var(--line); }
+.viewer-top h3 { flex: 1; min-width: 0; margin: 0; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer-actions { justify-content: center; padding: 8px 16px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.viewer-actions button { display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; }
+.viewer-actions button[hidden] { display: none; }
+.viewer-actions svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#viewer-body:focus { outline: none; }
+#viewer-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; }
+.viewer-wait { margin: auto; }
+#viewer-body[data-kind="image"], #viewer-body[data-kind="video"] { background: #101411; }
+.viewer-image { margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+#viewer-body.zoomed { display: block; }
+#viewer-body.zoomed .viewer-image { max-width: none; max-height: none; cursor: zoom-out; }
+.viewer-video { margin: auto; max-width: 100%; max-height: 100%; }
+.viewer-audio { margin: auto; width: min(480px, calc(100% - 32px)); }
+.viewer-code { margin: 0; padding: 16px 20px; font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--raised); flex: 1; }
+.viewer-doc { width: min(46rem, 100%); margin: 0 auto; padding: 20px; background: var(--raised); flex: 1; }
+.viewer-doc table { display: table; }
+.viewer-pages { display: flex; flex-direction: column; gap: 10px; padding: 12px; align-items: center; }
+.viewer-page { width: min(900px, 100%); background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .18); }
+.viewer-page canvas { display: block; width: 100%; height: 100%; }
+.viewer-icon { margin: auto; padding: 24px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 420px; }
+.viewer-icon .file-thumb { width: 160px; }
+.viewer-icon-name { font-weight: 500; overflow-wrap: anywhere; }
+
 dialog.wide { width: min(1000px, calc(100vw - 32px)); height: min(740px, calc(100vh - 32px)); padding: 0; }
 dialog.wide[open] { display: flex; flex-direction: column; }
 .dialog-bar { display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 20px; border-bottom: 1px solid var(--line); background: var(--paper); }
