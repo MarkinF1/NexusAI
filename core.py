@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import session_files
+import settings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("NEXUS_DATA", os.path.join(HERE, "data")))
@@ -33,12 +34,10 @@ MODELS = {
     "sonnet": "универсальная модель для повседневной разработки",
     "haiku": "для быстрых и простых задач",
 }
-DEFAULT_MODEL = os.environ.get("NEXUS_MODEL", "sonnet")
 CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 ENGINES = ("claude", "codex")
 WINDOWS = ("five_hour", "seven_day")
 # Защитный предел: обычно ответ останавливают кнопкой «Стоп».
-TIMEOUT = int(os.environ.get("NEXUS_TIMEOUT", "1800"))
 # Строки stream-json с картинками и выводом инструментов длиннее лимита asyncio (64 КБ).
 LINE_LIMIT = 16 * 1024 * 1024
 MAX_IMAGE = 5 * 1024 * 1024  # больше API не принимает
@@ -319,8 +318,8 @@ def delete_chat(uid, meta, files=True):
 # --- Модели ---
 
 def engines():
-    """Сети из NEXUS_ENGINES (например «[claude, codex]»), которые есть в системе."""
-    wanted = os.environ.get("NEXUS_ENGINES", "").strip("[] ").replace(" ", "")
+    """Сети из настройки engines (например «[claude, codex]»), которые есть в системе."""
+    wanted = settings.get(settings.ENGINES.name).strip("[] ").replace(" ", "")
     listed = [e for e in wanted.split(",") if e] or list(ENGINES)
     installed = {"claude": bool(CLAUDE_BIN) and os.access(CLAUDE_BIN, os.X_OK), "codex": bool(CODEX_BIN)}
     return [e for e in ENGINES if e in listed and installed[e]]
@@ -709,13 +708,13 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
     # Снятый скилл остаётся в списке у модели (skillOverrides из --settings его не
     # прячет), но запуск блокируется.
     deny += [f"Skill(nexus:{name})" for name in access["skills_off"] if name in installed]
-    settings = {}
+    cli_settings = {}
     if installed:
         # --safe-mode выключил бы и наш плагин, поэтому то же закрываем по отдельности.
         # Проверено ловушками в рабочей папке: .claude/skills, .claude/settings.json,
         # .mcp.json и CLAUDE.md в родительской папке не срабатывают. Хуки и MCP
         # выполнялись бы вне песочницы.
-        settings = {"disableBundledSkills": True, "disableAllHooks": True, "disableWorkflows": True,
+        cli_settings = {"disableBundledSkills": True, "disableAllHooks": True, "disableWorkflows": True,
                     "disableSkillShellExecution": True, "claudeMdExcludes": ["**/*"],
                     "enabledPlugins": {"cc-plugin-plugin-authoring@builtin": False,
                                        "cc-plugin-agents-md@builtin": False}}
@@ -730,7 +729,7 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         "--permission-mode", "dontAsk",
         "--add-dir", data,  # файловым инструментам — та же папка, что и Bash
         "--settings", json.dumps({
-            **settings,
+            **cli_settings,
             "sandbox": {
                 "enabled": True, "failIfUnavailable": True,
                 "autoAllowBashIfSandboxed": not only_listed, "allowUnsandboxedCommands": False,
@@ -848,7 +847,8 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
     on_proc(proc)
     stderr = asyncio.create_task(proc.stderr.read())
     said, fatal, err = False, False, ""
-    deadline = time.monotonic() + TIMEOUT
+    timeout = settings.get(settings.TIMEOUT.name)
+    deadline = time.monotonic() + timeout
     try:
         try:
             proc.stdin.write(payload.encode())
@@ -862,7 +862,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
             try:
                 line = await asyncio.wait_for(proc.stdout.readline(), deadline - time.monotonic())
             except TimeoutError:
-                raise RuntimeError(f"Ответ идёт дольше {TIMEOUT // 60} мин — остановлен") from None
+                raise RuntimeError(f"Ответ идёт дольше {max(1, timeout // 60)} мин — остановлен") from None
             if not line:
                 break
             try:

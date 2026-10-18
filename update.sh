@@ -7,7 +7,7 @@
 #
 # Если идут ответы или расшифровки голосовых, новые сообщения перестают приниматься
 # («Сайт обновляется»), а перезапуск делает отдельный процесс вне сервиса — когда они
-# закончатся, но не дольше NEXUS_UPDATE_WAIT секунд (по умолчанию 30 минут). Скрипт при этом
+# закончатся, но не дольше update_wait секунд из «Общих настроек» (по умолчанию 30 минут). Скрипт при этом
 # сразу возвращается: запущенный из беседы на этом сайте, он не ждёт сам себя.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -15,7 +15,10 @@ SERVICE=${NEXUS_SERVICE:-nexus-web.service}
 WAITER=${NEXUS_UPDATE_UNIT:-nexus-update}
 DATA=$(sed -n 's/^NEXUS_DATA=//p' .env 2>/dev/null | tail -1)
 DATA=${DATA:-$PWD/data}
-WAIT=${NEXUS_UPDATE_WAIT:-1800}
+# Сколько ждать ответы — «Общие настройки» (update_wait в settings.json); переменная окружения сильнее.
+WAIT=${NEXUS_UPDATE_WAIT:-$(.venv/bin/python -c 'import json, sys; print(json.load(open(sys.argv[1])).get("update_wait", ""))' \
+  "$DATA/settings.json" 2>/dev/null || true)}
+WAIT=${WAIT:-1800}
 if [ "$WAIT" -ge 60 ]; then LIMIT="$((WAIT / 60)) мин"; else LIMIT="$WAIT с"; fi
 
 # Сколько ответов и расшифровок идёт в нынешнем процессе сервиса (файл пишет сам сервис).

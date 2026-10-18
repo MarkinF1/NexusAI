@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import core
+import settings
 import usage
 import users
 
@@ -75,7 +76,8 @@ def new_chat(uid, engine, **extra):
     if engine not in avail:
         raise Refused(403, "Эта сеть вам недоступна")
     slugs = [m["slug"] for m in avail[engine]]
-    model = core.DEFAULT_MODEL if core.DEFAULT_MODEL in slugs else slugs[0]
+    wanted = settings.get(settings.MODEL.name)
+    model = wanted if wanted in slugs else slugs[0]
     meta = core.create_chat(uid, engine, model, default_effort(avail, engine, model))
     return core.save_chat(uid, {**meta, **extra}) if extra else meta
 

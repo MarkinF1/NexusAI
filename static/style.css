@@ -416,7 +416,18 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 #settings-back { display: none; margin-left: -10px; }
 /* Обычный участник видит только свой аккаунт: окно узкое, без списка и карточки */
 #settings:not(.admin) { width: min(420px, calc(100vw - 32px)); height: fit-content; }
-#settings:not(.admin) .people, #settings:not(.admin) #card, #settings:not(.admin) #skills-open { display: none; }
+#settings:not(.admin) .people, #settings:not(.admin) #card, #settings:not(.admin) #skills-open,
+#settings:not(.admin) #general-open { display: none; }
+/* Общие настройки: имя параметра, поле, описание; «Сохранить» — внизу, когда что-то изменили */
+.general-settings { display: block; flex: 1; margin: 0; padding: 0 24px 0; overflow-y: auto; }
+.general-settings > .muted { margin-top: 0; }
+.general-settings .setting { display: grid; gap: 4px; margin: 0 0 14px; max-width: 560px; }
+.general-settings .setting-name { font-size: 14px; font-weight: 500; }
+.general-settings .setting input, .general-settings .setting select { width: 100%; }
+.general-settings .setting small { font-size: 12.5px; line-height: 1.4; }
+.general-settings .setting.changed :is(input, select) { border-color: var(--ink); }
+.general-settings .save-bar { position: sticky; bottom: 0; padding: 12px 0 20px; background: var(--sheet); border-top: 1px solid var(--line); }
+.general-settings .save-bar[hidden] { display: none; }
 #settings:not(.admin) .users-side { flex: 1; width: auto; border: 0; }
 .users-layout { flex: 1; display: flex; min-height: 0; }
 .users-side { width: 220px; flex: none; padding: 16px 12px; background: var(--paper); border-right: 1px solid var(--line); overflow-y: auto; }
@@ -430,7 +441,8 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 #users-list button { width: 100%; text-align: left; margin-bottom: 2px; border-color: transparent; background: none; }
 #users-list button:hover { background: var(--soft); }
 #users-list button.active { background: var(--sheet); border-color: var(--line); font-weight: 500; }
-#skills-open { width: 100%; margin-top: 12px; }
+#general-open, #skills-open { width: 100%; margin-top: 12px; }
+#general-open + #skills-open { margin-top: 8px; }
 #skills-open + .actions { margin-top: 8px; }
 #tg-account { display: grid; gap: 8px; margin-top: 12px; }
 #tg-account + .actions { margin-top: 8px; }

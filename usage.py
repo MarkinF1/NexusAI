@@ -16,6 +16,7 @@ import urllib.request
 from datetime import datetime
 
 import core
+import settings
 import users
 
 log = logging.getLogger("nexus.usage")
@@ -48,9 +49,8 @@ def user_path(uid):
 
 
 # Свежая занятость подписки: те же адреса, что у /usage в claude и /status в codex.
-# Так видно и расход мимо сайта (свой CLI, другие программы), а не только снимок
+# Как часто — настройка usage_refresh. Так видно и расход мимо сайта (свой CLI, другие программы), а не только снимок
 # последнего запуска на сайте.
-REFRESH = int(os.environ.get("NEXUS_USAGE_REFRESH", "120"))  # секунды; 0 — не опрашивать
 CLAUDE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_URL = "https://chatgpt.com/backend-api/wham/usage"
 CODEX_WINDOWS = {18000: "five_hour", 604800: "seven_day"}
@@ -114,11 +114,14 @@ def refresh(engine):
     return True
 
 
-async def poll(engines):
-    while REFRESH > 0:
-        for engine in engines:
-            await asyncio.to_thread(refresh, engine)
-        await asyncio.sleep(REFRESH)
+async def poll():
+    """Опрос раз в usage_refresh секунд; 0 — пауза, настройку проверяем раз в минуту."""
+    while True:
+        every = settings.get(settings.USAGE_REFRESH.name)
+        if every > 0:
+            for engine in core.engines():
+                await asyncio.to_thread(refresh, engine)
+        await asyncio.sleep(every or 60)
 
 
 def same_window(a, b):

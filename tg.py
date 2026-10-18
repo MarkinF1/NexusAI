@@ -3,7 +3,7 @@
 Пишут боту только пользователи сайта, привязавшие Telegram в «Настройках». Беседа
 Telegram — обычная беседа пользователя с полем tg; в группе с темами одна тема —
 одна беседа владельца группы (кто сделал /start). Запускается из app.py, если
-задан NEXUS_TG_TOKEN.
+задан токен (настройка tg_token).
 """
 import asyncio
 import contextlib
@@ -728,7 +728,7 @@ async def run(token):
             log.warning("Telegram недоступен: %s", e)
             await asyncio.sleep(30)
         except TelegramUnauthorizedError:
-            log.error("Telegram не принял NEXUS_TG_TOKEN — бот выключен")
+            log.error("Telegram не принял токен бота — бот выключен")
             await bot.session.close()
             bot = None
             return
@@ -751,4 +751,4 @@ async def run(token):
     finally:
         jobs.notify = None
         await bot.session.close()
-        bot = None
+        bot = bot_name = None

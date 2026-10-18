@@ -23,6 +23,7 @@ from pydantic import BaseModel
 import core
 import jobs
 import session_files
+import settings
 import stt
 import tg
 import usage
@@ -39,7 +40,22 @@ VOICE_TYPES = {"audio/webm": "webm", "audio/ogg": "ogg", "audio/mp4": "m4a", "au
 VOICE_ID = re.compile(r"[0-9a-f]{32}")
 LOCK_AFTER, LOCK_FOR = 5, 15 * 60
 
-TG_TOKEN = os.environ.get("NEXUS_TG_TOKEN", "")
+bot_task = None  # опрос Telegram; новый токен в «Общих настройках» перезапускает его
+
+
+async def stop_task(task):
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def restart_bot():
+    global bot_task
+    await stop_task(bot_task)
+    tg.bot_name = None
+    token = settings.get(settings.TG_TOKEN.name)
+    bot_task = asyncio.create_task(tg.run(token)) if token else None
 
 
 @contextlib.asynccontextmanager
@@ -49,14 +65,15 @@ async def lifespan(app):
     with contextlib.suppress(FileNotFoundError):
         os.remove(jobs.DRAIN)
     jobs.save_busy()
-    tasks = [asyncio.create_task(usage.poll(core.engines()))]
-    if TG_TOKEN:
-        tasks.append(asyncio.create_task(tg.run(TG_TOKEN)))
+    poll = asyncio.create_task(usage.poll())
+    await restart_bot()
     yield
-    for task in tasks:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    await stop_task(poll)
+    await stop_task(bot_task)
+
+
+# Смена токена приходит из обработчика запроса — он в том же цикле событий.
+settings.watch(settings.TG_TOKEN.name, lambda _: asyncio.get_running_loop().create_task(restart_bot()))
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -607,6 +624,28 @@ def user_settings(uid: int, body: dict, user=Depends(admin_user)):
         return users.save_settings(uid, body)
     except (ValueError, TypeError, AttributeError) as e:
         raise HTTPException(400, f"Неверные настройки: {e}")
+
+
+# --- Общие настройки сервиса (data/settings.json) ---
+
+@app.get("/api/settings")
+def general_settings(user=Depends(admin_user)):
+    return settings.listing()
+
+
+@app.put("/api/settings")
+async def save_settings(body: dict, user=Depends(admin_user)):
+    """Изменённые параметры {имя: значение}: сначала проверяем все, потом сохраняем."""
+    unknown = [name for name in body if name not in settings.BY_NAME]
+    if unknown:
+        raise HTTPException(400, "Нет такого параметра: " + ", ".join(unknown))
+    try:
+        values = {name: settings.parameter(name).convert(value) for name, value in body.items()}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    for name, value in values.items():
+        settings.set(name, value)
+    return settings.listing()
 
 
 @app.get("/api/skills")

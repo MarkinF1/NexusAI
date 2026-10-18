@@ -1725,6 +1725,60 @@ $("#user-new").onclick = () => {
   setLevel("section");
 };
 
+// Общие настройки сервиса (data/settings.json). Форма строится по списку с сервера:
+// сколько параметров и как они называются — не важно.
+async function openGeneral() {
+  let list;
+  try { list = await api("/api/settings"); } catch (e) { alert(e.message); return; }
+  card = null;
+  document.querySelectorAll("#users-list button").forEach((b) => b.classList.remove("active"));
+  const form = el("form", "general-settings");
+  form.append(el("h3", "", "Общие настройки"),
+    el("p", "muted", "Хранятся в data/settings.json и применяются сразу, без перезапуска. "
+      + ".env задаёт только значения при первом запуске."));
+  const changed = {};
+  const bar = el("div", "save-bar");
+  bar.append(el("button", "primary", "Сохранить"));
+  bar.hidden = true;
+  for (const p of list) {
+    const row = el("label", "setting");
+    row.title = p.name;  // техническое имя — в подсказке, на экране русское название
+    let input;
+    if (p.choices.length) {
+      // Только определённые значения — выбор из списка.
+      input = el("select");
+      input.append(...p.choices.map((c) => { const o = el("option", "", String(c)); o.value = c; return o; }));
+    } else {
+      input = el("input");
+      input.type = p.secret ? "password" : p.type === "int" ? "number" : "text";
+      if (p.type === "int") { input.min = "0"; input.step = "1"; }
+      input.autocomplete = "off";
+      input.spellcheck = false;
+    }
+    input.value = p.value;
+    input.oninput = input.onchange = () => {
+      if (input.value !== String(p.value)) changed[p.name] = input.value;
+      else delete changed[p.name];
+      row.classList.toggle("changed", p.name in changed);
+      bar.hidden = !Object.keys(changed).length;
+    };
+    row.append(el("span", "setting-name", p.title), input);
+    if (p.about) row.append(el("small", "muted", p.about));
+    form.append(row);
+  }
+  form.append(bar);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("/api/settings", { method: "PUT", json: changed }); } catch (err) { alert(err.message); return; }
+    await openGeneral();  // значения после сохранения — как их понял сервер
+    refreshMe();  // могли поменяться сети или бот Telegram
+  };
+  $("#card").replaceChildren(form);
+  setLevel("section");
+}
+
+$("#general-open").onclick = openGeneral;
+
 // Скиллы аккаунта claude.ai, выложенные на сайт; пользоваться ими можно по галочке «Скиллы».
 $("#skills-open").onclick = async () => {
   let data;

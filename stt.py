@@ -2,26 +2,27 @@
 import asyncio
 import io
 import logging
-import os
+
+import settings
 
 log = logging.getLogger("nexus.stt")
-# Модель faster-whisper: small — быстро, medium и large-v3-turbo — точнее, но тяжелее.
-# Старые имена NEXUS_TG_STT_* тоже понимаем: раньше голосовые были только в боте.
-MODEL = os.environ.get("NEXUS_STT_MODEL") or os.environ.get("NEXUS_TG_STT_MODEL") or "small"
-LANG = os.environ.get("NEXUS_STT_LANG") or os.environ.get("NEXUS_TG_STT_LANG") or None  # пусто — определять само
-
-model = None  # грузится при первом голосовом: ~1 ГБ памяти
+# Модель и язык — настройки stt_model и stt_lang: small — быстро, large-v3-turbo — точнее.
+model = None  # грузится при первом голосовом: от 0,7 ГБ памяти
+loaded = ""  # имя загруженной модели: сменили настройку — при следующем голосовом грузим новую
 lock = asyncio.Lock()  # по одной расшифровке: модель одна, процессор общий
 
 
 def run(data):
     """Блокирующая расшифровка — только из потока."""
-    global model
-    if model is None:
+    global model, loaded
+    name = settings.get(settings.STT_MODEL.name) or settings.STT_MODEL.default
+    if model is None or loaded != name:
         from faster_whisper import WhisperModel
-        log.info("загружаю модель распознавания %s", MODEL)
-        model = WhisperModel(MODEL, device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(io.BytesIO(data), language=LANG, vad_filter=True)
+        log.info("загружаю модель распознавания %s", name)
+        model = None  # прежнюю отпускаем до загрузки новой: памяти на две может не хватить
+        model = WhisperModel(name, device="cpu", compute_type="int8")
+        loaded = name
+    segments, _ = model.transcribe(io.BytesIO(data), language=settings.get(settings.STT_LANG.name) or None, vad_filter=True)
     return " ".join(s.text.strip() for s in segments).strip()
 
 

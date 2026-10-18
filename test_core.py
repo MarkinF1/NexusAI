@@ -43,6 +43,7 @@ import app  # noqa: E402
 import core  # noqa: E402
 import jobs  # noqa: E402
 import usage  # noqa: E402
+import settings  # noqa: E402
 import users  # noqa: E402
 
 ACCESS = users.clean({})["access"]
@@ -277,7 +278,7 @@ class Library(unittest.TestCase):
         self.assertEqual(size["context"], len(lines[2]))  # перечитывается только часть после сжатия
         self.assertEqual(size["session"], sum(map(len, lines)))
         self.assertTrue(size["compactable"])
-        self.assertEqual(size["limit"], users.COMPACT_MB * 2 ** 20)  # порог по умолчанию — из .env
+        self.assertEqual(size["limit"], settings.get(settings.COMPACT_MB.name) * 2 ** 20)  # порог по умолчанию — общая настройка
         with unittest.mock.patch("jobs.check", return_value={}), \
                 unittest.mock.patch("jobs.start", unittest.mock.AsyncMock()) as start:
             asyncio.run(app.compact(meta["id"], owner))
@@ -292,7 +293,7 @@ class Library(unittest.TestCase):
         self.assertEqual(events, [{"kind": "compacted", "tokens": 1842, "auto": False}])
         self.assertEqual(users.clean({"compact_mb": 12})["compact_mb"], 12)
         self.assertEqual(users.clean({"compact_mb": 0})["compact_mb"], 0)  # явный 0 — не предлагать
-        self.assertEqual(users.clean({})["compact_mb"], users.COMPACT_MB)
+        self.assertEqual(users.clean({})["compact_mb"], settings.get(settings.COMPACT_MB.name))
         with self.assertRaises(ValueError):
             users.clean({"compact_mb": -1})
 
@@ -414,20 +415,137 @@ class Voice(unittest.TestCase):
             del jobs.transcribing[(42, chat)]
         self.assertFalse(app.get_chat(chat, owner)["transcribing"])
 
-class SttConfig(unittest.TestCase):
-    def test_model_from_env(self):
-        import importlib
+class GeneralSettings(unittest.TestCase):
+    """settings.py: settings.json поверх .env, get/set, проверка значений и форма админа."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.file = os.path.join(self.dir, "settings.json")
+        patch = unittest.mock.patch.object(settings, "path", lambda: self.file)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(settings.load)  # остальным тестам — прежние настройки
+
+    def env(self, file=None, **values):
+        """Окружение только с values; file — содержимое .env (по умолчанию файла нет)."""
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("NEXUS_") or k == "NEXUS_DATA"}
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.dict(os.environ, {**clean, **values}, clear=True))
+        parsed = {}
+        for line in (file or "").splitlines():
+            key, _, value = line.partition("=")
+            parsed[key] = value
+        stack.enter_context(unittest.mock.patch.object(settings, "dotenv", lambda: parsed))
+        return stack
+
+    def stored(self):
+        with open(self.file) as f:
+            return json.load(f)
+
+    def test_first_start_from_env(self):
+        with self.env(NEXUS_TIMEOUT="600", NEXUS_TG_STT_MODEL="base", NEXUS_COMPACT_MB="abc"):
+            settings.load()
+        self.assertEqual(settings.get(settings.TIMEOUT.name), 600)  # из .env
+        self.assertEqual(settings.get(settings.STT_MODEL.name), "base")  # старое имя переменной тоже понимаем
+        self.assertEqual(settings.get(settings.COMPACT_MB.name), 10)  # кривое значение в .env — по умолчанию
+        self.assertEqual(settings.get(settings.MODEL.name), "sonnet")  # нет в .env — по умолчанию
+        self.assertEqual(set(self.stored()), {p.name for p in settings.PARAMETERS})  # файл создан со всеми параметрами
+        self.assertEqual(oct(os.stat(self.file).st_mode & 0o777), "0o600")  # внутри токен бота
+
+    def test_dotenv_file(self):
+        """Первый запуск из консоли (users.py): окружения нет — берём сам файл .env."""
+        with self.env(file="NEXUS_TG_TOKEN=123:abc\nNEXUS_TIMEOUT=77", NEXUS_TIMEOUT="66"):
+            settings.load()
+        self.assertEqual(settings.get(settings.TG_TOKEN.name), "123:abc")
+        self.assertEqual(settings.get(settings.TIMEOUT.name), 66)  # окружение сильнее файла
+        path = os.path.join(self.dir, ".env")
+        with open(path, "w") as f:
+            f.write('# комментарий\nNEXUS_MODEL="opus"\nNEXUS_TG_TOKEN=\n')
+        with unittest.mock.patch.object(settings, "HERE", self.dir):
+            parsed = settings.dotenv()
+        self.assertEqual(parsed, {"NEXUS_MODEL": "opus", "NEXUS_TG_TOKEN": ""})
+
+    def test_file_wins_and_gets_completed(self):
+        with open(self.file, "w") as f:
+            json.dump({"timeout": 99, "model": "opus", "future": True, "compact_mb": -5}, f)
+        with self.env(NEXUS_TIMEOUT="600", NEXUS_USAGE_REFRESH="30"):
+            settings.load()
+        self.assertEqual(settings.get(settings.TIMEOUT.name), 99)  # файл сильнее .env
+        self.assertEqual(settings.get(settings.USAGE_REFRESH.name), 30)  # недостающее — из .env
+        self.assertEqual(settings.get(settings.COMPACT_MB.name), 10)  # отрицательное — по умолчанию
+        stored = self.stored()
+        self.assertEqual((stored["usage_refresh"], stored["future"]), (30, True))  # дописан, чужое не теряем
+
+    def test_set_saves_and_notifies(self):
+        with self.env():
+            settings.load()
+        seen = []
+        settings.watch(settings.STT_LANG.name, seen.append)
+        self.addCleanup(settings._watchers.pop, "stt_lang")
+        self.assertEqual(settings.set(settings.STT_LANG.name, " ru "), "ru")
+        self.assertEqual(settings.set(settings.TIMEOUT.name, "120"), 120)
+        settings.set(settings.STT_LANG.name, "ru")  # то же значение — без уведомления
+        self.assertEqual(seen, ["ru"])
+        self.assertEqual((self.stored()["stt_lang"], self.stored()["timeout"]), ("ru", 120))
+        for name, bad in (("timeout", "abc"), ("timeout", "-1")):
+            with self.assertRaises(ValueError):
+                settings.set(name, bad)
+        with self.assertRaises(KeyError):
+            settings.set("nope", 1)
+        with self.assertRaises(ValueError):  # только из списка
+            settings.set(settings.MODEL.name, "gpt")
+        self.assertEqual(settings.set(settings.MODEL.name, "opus"), "opus")
+        self.assertIn("Возможные значения: opus, sonnet, haiku.", settings.MODEL.description())
+        self.assertEqual(settings.TIMEOUT.description(), settings.TIMEOUT.about)  # без выбора — без списка
+        settings.load()  # перечитали с диска — то же
+        self.assertEqual(settings.get(settings.TIMEOUT.name), 120)
+
+    def test_admin_form(self):
+        with self.env():
+            settings.load()
+        admin = {"id": 1, "is_admin": True}
+        listing = app.general_settings(admin)
+        self.assertEqual([p["name"] for p in listing], [p.name for p in settings.PARAMETERS])
+        token = next(p for p in listing if p["name"] == "tg_token")
+        self.assertTrue(token["secret"])
+        self.assertEqual(token["title"], "Токен Telegram-бота")  # на экране — русское название
+        model = next(p for p in listing if p["name"] == settings.MODEL.name)
+        self.assertEqual(model["choices"], ["opus", "sonnet", "haiku"])
+        self.assertEqual(next(p for p in listing if p["name"] == "timeout")["type"], "int")
+        with self.assertRaises(HTTPException):  # одно плохое значение — не сохраняется ничего
+            asyncio.run(app.save_settings({"stt_lang": "en", "timeout": "x"}, admin))
+        self.assertEqual(settings.get(settings.STT_LANG.name), "")
+        with self.assertRaises(HTTPException):
+            asyncio.run(app.save_settings({"nope": 1}, admin))
+        result = asyncio.run(app.save_settings({"stt_lang": "en", "timeout": "300"}, admin))
+        self.assertEqual(next(p for p in result if p["name"] == "timeout")["value"], 300)
+
+    def test_live_use(self):
+        """Параметры читаются в момент использования: новое значение действует сразу."""
+        import sys
         import stt
-        cases = [({}, "small", None), ({"NEXUS_TG_STT_MODEL": "base", "NEXUS_TG_STT_LANG": "en"}, "base", "en"),
-                 ({"NEXUS_STT_MODEL": "medium", "NEXUS_TG_STT_MODEL": "base", "NEXUS_STT_LANG": "ru"}, "medium", "ru")]
-        try:
-            for env, model, lang in cases:
-                clean = {k: v for k, v in os.environ.items() if "STT" not in k}
-                with unittest.mock.patch.dict(os.environ, {**clean, **env}, clear=True):
-                    importlib.reload(stt)
-                    self.assertEqual((stt.MODEL, stt.LANG), (model, lang))
-        finally:
-            importlib.reload(stt)
+        with self.env():
+            settings.load()
+        settings.set(settings.COMPACT_MB.name, 3)
+        self.assertEqual(users.clean({})["compact_mb"], 3)
+        loaded = []
+
+        class Whisper:
+            def __init__(self, name, **kw):
+                loaded.append(name)
+
+            def transcribe(self, audio, language=None, **kw):
+                return [unittest.mock.Mock(text=f"{language}")], None
+
+        fake = unittest.mock.Mock(WhisperModel=Whisper)
+        with unittest.mock.patch.dict(sys.modules, {"faster_whisper": fake}), \
+                unittest.mock.patch.object(stt, "model", None), unittest.mock.patch.object(stt, "loaded", ""):
+            settings.set(settings.STT_LANG.name, "ru")
+            self.assertEqual(stt.run(b"x"), "ru")
+            stt.run(b"x")
+            settings.set(settings.STT_MODEL.name, "large-v3-turbo")
+            stt.run(b"x")
+        self.assertEqual(loaded, ["small", "large-v3-turbo"])  # сменили модель — загрузилась новая
 
 
 class Update(unittest.TestCase):
@@ -595,15 +713,14 @@ class Access(unittest.TestCase):
 
 class Engines(unittest.TestCase):
     def test_env_list(self):
-        for raw, expected in (("[claude]", ["claude"]), ("claude, codex", ["claude", "codex"]),
-                              ("", ["claude", "codex"]), ("[codex]", ["codex"])):
-            os.environ["NEXUS_ENGINES"] = raw
+        for raw, expected in (("[claude]", ["claude"]), ("[claude, codex]", ["claude", "codex"]),
+                              ("[codex]", ["codex"])):
+            settings.set(settings.ENGINES.name, raw)
             with unittest.mock.patch.object(core, "CODEX_BIN", "/bin/true"):
                 self.assertEqual(core.engines(), expected, raw)
-        os.environ["NEXUS_ENGINES"] = "[claude, codex]"
+        settings.set(settings.ENGINES.name, "[claude, codex]")
         with unittest.mock.patch.object(core, "CODEX_BIN", None):
             self.assertEqual(core.engines(), ["claude"])  # codex нет в системе
-        del os.environ["NEXUS_ENGINES"]
 
 
 class Permissions(unittest.TestCase):

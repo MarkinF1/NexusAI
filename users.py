@@ -14,10 +14,10 @@ import sqlite3
 import time
 
 import core
+import settings as general  # общие настройки сервиса; settings() здесь — настройки пользователя
 
 LOGIN_TTL = 30 * 24 * 3600
 # Порог «Сжать беседу» у тех, кому его ещё не задали; 0 — не предлагать.
-COMPACT_MB = int(os.environ.get("NEXUS_COMPACT_MB", "10"))
 # Галочки «Доступ» у каждой сети свои: что модели можно делать в песочнице.
 # Значение — умолчание для того, у кого галочки ещё нет: прежние права остаются,
 # новые ограничения выключены.
@@ -219,7 +219,7 @@ def clean(raw):
     quota = int(raw.get("quota_mb") or 0)
     if quota < 0:
         raise ValueError("Квота не может быть отрицательной")
-    compact = int(raw.get("compact_mb", COMPACT_MB) or 0)
+    compact = int(raw.get("compact_mb", general.get(general.COMPACT_MB.name)) or 0)
     if compact < 0:
         raise ValueError("Порог сжатия не может быть отрицательным")
     access = raw.get("access") or {}
