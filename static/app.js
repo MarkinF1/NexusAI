@@ -642,6 +642,7 @@ function render(ev) {
   } else if (ev.kind === "transcript") {
     node = transcriptNode(ev);
   } else if (ev.kind === "voice_answer") {
+    if (ev.voice === fixing) stopEdit(true);  // на вопрос уже ответили — править нечего
     // «Да» — текст ушёл репликой пользователя; «нет» — убираем только вопрос и кнопки.
     const asked = feed.querySelector(`.msg-transcript[data-voice="${ev.voice}"]`);
     if (ev.ok) asked?.remove();
@@ -694,22 +695,38 @@ async function retry(text) {
   return true;
 }
 
-// Изменение запроса: текст в поле ввода, отправка заменит последний запрос и ответ.
+// Текст в поле ввода на правку. «Изменить запрос» — отправка заменит последний запрос
+// и ответ; «Исправить» расшифровку — уйдёт обычной репликой вместо голосового.
 let editing = false;
+let fixing = null;  // голосовое, расшифровку которого правят
 
-function startEdit() {
-  editing = true;
-  $("#composer").classList.add("editing");
+function editText(value, note) {
+  $("#edit-text").textContent = note;
   $("#edit-bar").hidden = false;
   const text = $("#text");
-  text.value = lastAsk.text;
+  text.value = value;
   text.dispatchEvent(new Event("input"));
   text.focus();
+  text.setSelectionRange(value.length, value.length);
+}
+
+function startEdit() {
+  stopEdit(false);
+  editing = true;
+  $("#composer").classList.add("editing");
+  editText(lastAsk.text, "Изменение последнего запроса: прежний ответ заменится новым");
+}
+
+function startFix(ev) {
+  stopEdit(false);
+  fixing = ev.voice;
+  editText(ev.text, "Исправление расшифровки: поправьте текст и отправьте");
 }
 
 function stopEdit(clear) {
-  if (!editing) return;
+  if (!editing && !fixing) return;
   editing = false;
+  fixing = null;
   $("#composer").classList.remove("editing");
   $("#edit-bar").hidden = true;
   if (clear) {
@@ -827,7 +844,8 @@ $("#composer").onsubmit = async (e) => {
   }
   $("#send").disabled = true;
   try {
-    await sendMessage(text, attachments);
+    await sendMessage(text, attachments, fixing);  // исправленная расшифровка закрывает вопрос
+    stopEdit(false);
     $("#text").value = "";
     $("#text").style.height = "auto";
     attachments = [];
@@ -1141,13 +1159,16 @@ function transcriptNode(ev) {
   label.append("Расшифровка голосового");
   const ask = el("div", "transcript-ask");
   const yes = el("button", "primary", "Да");
+  const fix = el("button", "", "Исправить");
   const no = el("button", "", "Нет");
-  yes.type = no.type = "button";
+  yes.type = fix.type = no.type = "button";
+  fix.title = "Перенести текст в поле ввода, поправить и отправить";
   yes.onclick = async () => {
     yes.disabled = no.disabled = true;
     try { await sendMessage(ev.text, [], ev.voice); } catch (err) { alert(err.message); }
     yes.disabled = no.disabled = false;
   };
+  fix.onclick = () => startFix(ev);
   no.onclick = async () => {
     yes.disabled = no.disabled = true;
     try {
@@ -1159,7 +1180,7 @@ function transcriptNode(ev) {
       yes.disabled = no.disabled = false;
     }
   };
-  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, no);
+  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, fix, no);
   node.append(label, el("div", "transcript-text", ev.text), ask);
   return node;
 }

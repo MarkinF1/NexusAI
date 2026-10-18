@@ -5,8 +5,10 @@ import logging
 import os
 
 log = logging.getLogger("nexus.stt")
-MODEL = os.environ.get("NEXUS_TG_STT_MODEL", "small")
-LANG = os.environ.get("NEXUS_TG_STT_LANG") or None  # пусто — определять само
+# Модель faster-whisper: small — быстро, medium и large-v3-turbo — точнее, но тяжелее.
+# Старые имена NEXUS_TG_STT_* тоже понимаем: раньше голосовые были только в боте.
+MODEL = os.environ.get("NEXUS_STT_MODEL") or os.environ.get("NEXUS_TG_STT_MODEL") or "small"
+LANG = os.environ.get("NEXUS_STT_LANG") or os.environ.get("NEXUS_TG_STT_LANG") or None  # пусто — определять само
 
 model = None  # грузится при первом голосовом: ~1 ГБ памяти
 lock = asyncio.Lock()  # по одной расшифровке: модель одна, процессор общий

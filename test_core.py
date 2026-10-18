@@ -414,6 +414,22 @@ class Voice(unittest.TestCase):
             del jobs.transcribing[(42, chat)]
         self.assertFalse(app.get_chat(chat, owner)["transcribing"])
 
+class SttConfig(unittest.TestCase):
+    def test_model_from_env(self):
+        import importlib
+        import stt
+        cases = [({}, "small", None), ({"NEXUS_TG_STT_MODEL": "base", "NEXUS_TG_STT_LANG": "en"}, "base", "en"),
+                 ({"NEXUS_STT_MODEL": "medium", "NEXUS_TG_STT_MODEL": "base", "NEXUS_STT_LANG": "ru"}, "medium", "ru")]
+        try:
+            for env, model, lang in cases:
+                clean = {k: v for k, v in os.environ.items() if "STT" not in k}
+                with unittest.mock.patch.dict(os.environ, {**clean, **env}, clear=True):
+                    importlib.reload(stt)
+                    self.assertEqual((stt.MODEL, stt.LANG), (model, lang))
+        finally:
+            importlib.reload(stt)
+
+
 class Update(unittest.TestCase):
     def test_drain_and_busy(self):
         owner = {"id": 44, "is_admin": False}
