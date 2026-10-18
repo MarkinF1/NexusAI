@@ -172,7 +172,6 @@
     <span id="library-total" class="muted"></span>
   </div>
   <div class="library-filters">
-    <select id="library-chat" aria-label="Беседа"></select>
     <select id="library-kind" aria-label="Тип файла"></select>
     <button id="library-select" type="button">Выбрать</button>
   </div>
@@ -193,7 +192,16 @@
     <input id="files-search" type="search" placeholder="Поиск по имени" aria-label="Поиск по имени">
     <span id="files-total" class="muted"></span>
   </div>
+  <div class="library-filters">
+    <select id="files-kind" aria-label="Тип файла"></select>
+    <button id="files-select" type="button">Выбрать</button>
+  </div>
   <ul id="files-list" class="file-grid"></ul>
+  <div id="files-bar" class="library-bar" hidden>
+    <button id="files-all" type="button" class="link"></button>
+    <span id="files-picked" class="muted"></span>
+    <button id="files-delete" type="button" class="danger" disabled>Удалить</button>
+  </div>
 </dialog>
 
 <dialog id="file-share">

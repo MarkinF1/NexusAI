@@ -597,6 +597,21 @@ def chat_thumb(chat: str, path: str, user=Depends(current_user)):
     return thumb_response(user, chat_file_target(user, chat, path))
 
 
+class FilePaths(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/chats/{chat}/files/delete")
+def delete_files(chat: str, body: FilePaths, user=Depends(current_user)):
+    """Несколько файлов сразу (выделение в «Файлах беседы»); из библиотеки не удаляются."""
+    own_chat(user, chat)
+    idle(user, chat)
+    paths = list(dict.fromkeys(body.paths))
+    if not paths or len(paths) > 5000:
+        raise HTTPException(400, "Не выбраны файлы")
+    return {"deleted": core.delete_chat_files(user["id"], chat, paths)}
+
+
 @app.delete("/api/chats/{chat}/file")
 def delete_file(chat: str, path: str, user=Depends(current_user)):
     """Файл уходит из беседы; если он уже в библиотеке, там остаётся."""
@@ -651,12 +666,8 @@ def library_file(path: str, download: bool = False, user=Depends(current_user)):
                         headers={"Content-Security-Policy": "sandbox"})
 
 
-class LibraryPaths(BaseModel):
-    paths: list[str]
-
-
 @app.post("/api/library/delete")
-def delete_library_files(body: LibraryPaths, user=Depends(current_user)):
+def delete_library_files(body: FilePaths, user=Depends(current_user)):
     """Несколько файлов сразу (выделение в библиотеке). Если какая-то из бесед с этими
     файлами сейчас отвечает, не удаляется ничего."""
     paths = list(dict.fromkeys(body.paths))

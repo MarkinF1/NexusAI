@@ -364,23 +364,24 @@ dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
 .library-filters { display: flex; gap: 8px; padding: 0 20px 8px; }
 .library-filters select { flex: 1 1 0; min-width: 0; padding-left: 10px; text-overflow: ellipsis; }
 .library-filters button { flex: none; }
-#library.selecting #library-select { background: var(--engine); color: var(--on-engine); border-color: transparent; }
+.selecting .library-filters button { background: var(--engine); color: var(--on-engine); border-color: transparent; }
 /* Выбор нескольких: кружок с галочкой вместо крестика, внизу — сколько выбрано и «Удалить» */
 .library-bar { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--paper); }
 .library-bar[hidden] { display: none; }
-.library-bar #library-picked { flex: 1; min-width: 0; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.library-bar .muted { flex: 1; min-width: 0; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-pick {
   position: absolute; top: 0; right: 0; width: 24px; height: 24px; display: none; place-items: center;
   border-radius: 50%; border: 2px solid var(--muted); background: var(--sheet); color: var(--on-engine);
   box-shadow: 0 1px 3px rgba(0, 0, 0, .2); pointer-events: none;
 }
 .file-pick svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; visibility: hidden; }
-#library.selecting .file-pick { display: grid; }
-#library.selecting .file-del, #library.selecting .file-sub .icon { display: none; }
-#library.selecting .file-card { cursor: pointer; user-select: none; -webkit-user-select: none; }
-#library.selecting .file-card.picked { background: color-mix(in srgb, var(--engine) 14%, transparent); }
-.file-card.picked .file-pick { background: var(--engine); border-color: var(--engine); }
-.file-card.picked .file-pick svg { visibility: visible; }
+.selecting .file-pick { display: grid; }
+.selecting .file-del, .selecting .file-sub .icon { display: none; }
+.selecting .file-grid > li { cursor: pointer; user-select: none; -webkit-user-select: none; border-radius: 10px; }
+.selecting .file-grid > li.picked { background: color-mix(in srgb, var(--engine) 14%, transparent); }
+.selecting .file-grid > li .file-tile:hover { background: none; }
+.file-grid > li.picked .file-pick { background: var(--engine); border-color: var(--engine); }
+.file-grid > li.picked .file-pick svg { visibility: visible; }
 
 /* Плитки файлов: превью или значок, под ним имя. В беседе — два столбца, в библиотеке — сколько влезет */
 .file-grid {

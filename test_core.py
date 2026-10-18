@@ -363,12 +363,12 @@ class LibraryBatch(unittest.TestCase):
         jobs.jobs[(38, b["id"])] = object()  # беседа b отвечает — ничего не удаляется
         try:
             with self.assertRaises(HTTPException) as err:
-                app.delete_library_files(app.LibraryPaths(paths=["a1.txt", "b1.txt"]), owner)
+                app.delete_library_files(app.FilePaths(paths=["a1.txt", "b1.txt"]), owner)
             self.assertEqual(err.exception.status_code, 409)
             self.assertEqual(sorted(os.listdir(lib)), ["a1.txt", "a2.txt", "b1.txt", "keep.txt"])
         finally:
             del jobs.jobs[(38, b["id"])]
-        result = app.delete_library_files(app.LibraryPaths(paths=["a1.txt", "b1.txt", "a1.txt", "gone.txt", "../MEMORY.md"]), owner)
+        result = app.delete_library_files(app.FilePaths(paths=["a1.txt", "b1.txt", "a1.txt", "gone.txt", "../MEMORY.md"]), owner)
         self.assertEqual(sorted(result["deleted"]), ["a1.txt", "b1.txt"])
         self.assertEqual(sorted(os.listdir(lib)), ["a2.txt", "keep.txt"])
         self.assertEqual(sorted(os.listdir(os.path.join(core.workspace(38, a["id"]), "files", "general"))), ["a2.txt", "keep.txt"])
@@ -376,7 +376,36 @@ class LibraryBatch(unittest.TestCase):
         self.assertEqual(sorted(core.links(38, a["id"]).values()), ["a2.txt", "keep.txt"])
         self.assertTrue(os.path.exists(core.memory_file(38)))
         with self.assertRaises(HTTPException):
-            app.delete_library_files(app.LibraryPaths(paths=[]), owner)
+            app.delete_library_files(app.FilePaths(paths=[]), owner)
+
+
+class ChatFilesBatch(unittest.TestCase):
+    def test_delete_many(self):
+        owner = {"id": 39, "is_admin": False}
+        meta = core.create_chat(39, "claude", "sonnet")
+        cwd = core.workspace(39, meta["id"])
+        for name in ("old.txt", "keep.txt"):
+            with open(os.path.join(cwd, "files", "for_user", name), "w") as f:
+                f.write(name)
+        core.finish(39, meta["id"], True)  # в general и в библиотеке
+        with open(os.path.join(cwd, "files", "from_user", "new.jpg"), "w") as f:
+            f.write("x")
+        os.link(core.memory_file(39), os.path.join(cwd, "files", "from_user", "alien"))  # чужая жёсткая ссылка
+        result = app.delete_files(meta["id"], app.FilePaths(paths=[
+            "files/general/old.txt", "files/from_user/new.jpg", "files/from_user/alien", "../MEMORY.md", "files/none"]), owner)
+        self.assertEqual(result["deleted"], ["files/general/old.txt", "files/from_user/new.jpg"])
+        self.assertEqual(os.listdir(os.path.join(cwd, "files", "general")), ["keep.txt"])
+        self.assertEqual(sorted(os.listdir(core.library(39))), ["keep.txt", "old.txt"])  # библиотека не тронута
+        self.assertEqual(list(core.links(39, meta["id"]).values()), ["keep.txt"])
+        jobs.jobs[(39, meta["id"])] = object()
+        try:
+            with self.assertRaises(HTTPException) as err:
+                app.delete_files(meta["id"], app.FilePaths(paths=["files/general/keep.txt"]), owner)
+            self.assertEqual(err.exception.status_code, 409)
+        finally:
+            del jobs.jobs[(39, meta["id"])]
+        with self.assertRaises(HTTPException):  # чужая беседа
+            app.delete_files(meta["id"], app.FilePaths(paths=["files/general/keep.txt"]), {"id": 40, "is_admin": False})
 
 
 class Thumbnails(unittest.TestCase):

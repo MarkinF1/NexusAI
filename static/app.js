@@ -1359,8 +1359,6 @@ function fileTile(f) {
 
 const baseName = (path) => path.split("/").pop();
 
-let chatFiles = [];
-
 // Красный кружок с белым крестиком в углу плитки.
 function deleteButton(label, onclick) {
   const button = el("button", "file-del");
@@ -1372,52 +1370,7 @@ function deleteButton(label, onclick) {
   return button;
 }
 
-function showFiles() {
-  const query = $("#files-search").value.trim().toLowerCase();
-  const items = chatFiles.filter((f) => baseName(f.path).toLowerCase().includes(query));
-  const total = chatFiles.reduce((sum, f) => sum + f.size, 0);
-  $("#files-total").textContent = `${chatFiles.length} · ${size(total)}`;
-  $("#files-list").replaceChildren(...(items.length ? items.map((f) => {
-    const li = el("li");
-    const name = baseName(f.path);
-    li.append(fileTile(f), deleteButton("Удалить " + name, async () => {
-      // Файлы из general уже в библиотеке: там они остаются.
-      const kept = f.path.startsWith("files/general/");
-      if (!confirm(kept ? `Убрать «${name}» из беседы? В библиотеке файл останется.` : `Удалить «${name}»?`)) return;
-      try {
-        await api(`/api/chats/${current.id}/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
-      } catch (err) { return alert(err.message); }
-      chatFiles = chatFiles.filter((x) => x !== f);
-      showFiles();
-      showSize();
-    }));
-    return li;
-  }) : [el("li", "muted", chatFiles.length ? "Ничего не найдено" : "Пока пусто")]));
-}
-
-$("#export").onclick = () => {
-  // Имя — как у сервера: название беседы без недопустимых в именах файлов знаков.
-  const name = (current.title || "Беседа").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
-  saveFile(`/api/chats/${current.id}/export`, name + ".md");
-};
-
-$("#files-open").onclick = async () => {
-  try {
-    chatFiles = await api(`/api/chats/${current.id}/files`);
-  } catch (err) { return alert(err.message); }
-  $("#files-search").value = "";
-  showFiles();
-  $("#files").showModal();
-};
-$("#files-search").oninput = showFiles;
-
-// --- Библиотека ---
-
-let library = [];
-let picked = new Set();      // выбранные пути в режиме «Выбрать»
-let selecting = false;
-
-// Типы для фильтра библиотеки; что не подошло ни под один — «Другое».
+// Типы для фильтра; что не подошло ни под один — «Другое».
 const KINDS = [
   ["image", "Фото и картинки", IMAGE],
   ["doc", "Документы", /\.(pdf|docx?|odt|rtf|txt|md|pages|epub)$/i],
@@ -1435,176 +1388,237 @@ function plural(n, one, few, many) {
 }
 const filesWord = (n) => `${n} ${plural(n, "файл", "файла", "файлов")}`;
 
-// Списки фильтров — только то, что есть в библиотеке, с числом файлов. Выбранное
-// значение сохраняется, пока такие файлы остаются.
-function fillFilters() {
-  const chatSel = $("#library-chat"), kindSel = $("#library-kind");
-  const chatWas = chatSel.value, kindWas = kindSel.value;
-  const chats = new Map();
-  let loose = 0;
-  for (const f of library) {
-    if (!f.chats.length) loose++;
-    for (const c of f.chats) {
-      const known = chats.get(c.id) || { title: c.title || "Новая беседа", n: 0 };
-      known.n++;
-      chats.set(c.id, known);
-    }
+// Окно с плитками файлов: поиск по имени, фильтр по типу и режим «Выбрать» с
+// удалением пачкой. Одно и то же для «Файлов беседы» и библиотеки; id элементов —
+// `${id}-search`, `${id}-kind`, `${id}-select`, `${id}-list`, `${id}-bar`…
+// spec: card(f) — плитка, empty — текст пустого окна, remove(files) — удалить на
+// сервере (вернуть удалённые пути или null при отказе), changed() — после удаления.
+function fileBrowser(id, spec) {
+  const $$ = (part) => $(`#${id}-${part}`);
+  const dialog = $(`#${id}`);
+  const b = { items: [], picked: new Set(), selecting: false };
+
+  // Типы — только те, что есть, с числом файлов; выбранный сохраняется, пока такие есть.
+  function fillKinds() {
+    const select = $$("kind"), was = select.value;
+    const kinds = {};
+    for (const f of b.items) { const k = kindOf(f.path); kinds[k] = (kinds[k] || 0) + 1; }
+    const option = (value, label) => { const o = el("option", "", label); o.value = value; return o; };
+    select.replaceChildren(option("", "Все типы"),
+      ...[...KINDS, ["other", "Другое"]].filter(([k]) => kinds[k]).map(([k, label]) => option(k, `${label} (${kinds[k]})`)));
+    select.value = [...select.options].some((o) => o.value === was) ? was : "";
   }
-  const option = (value, label) => { const o = el("option", "", label); o.value = value; return o; };
-  chatSel.replaceChildren(option("", "Все беседы"),
-    ...[...chats].map(([id, c]) => option(id, `${c.title} (${c.n})`)),
-    ...(loose ? [option("-", `Без беседы (${loose})`)] : []));
-  const kinds = {};
-  for (const f of library) { const k = kindOf(f.path); kinds[k] = (kinds[k] || 0) + 1; }
-  kindSel.replaceChildren(option("", "Все типы"),
-    ...[...KINDS, ["other", "Другое"]].filter(([k]) => kinds[k]).map(([k, label]) => option(k, `${label} (${kinds[k]})`)));
-  chatSel.value = [...chatSel.options].some((o) => o.value === chatWas) ? chatWas : "";
-  kindSel.value = [...kindSel.options].some((o) => o.value === kindWas) ? kindWas : "";
+
+  b.shown = () => {
+    const query = $$("search").value.trim().toLowerCase(), kind = $$("kind").value;
+    return b.items.filter((f) => baseName(f.path).toLowerCase().includes(query) && (!kind || kindOf(f.path) === kind));
+  };
+
+  // Внизу: сколько выбрано и сколько это места; «Выбрать все» — по текущему фильтру.
+  function showPicked() {
+    const files = b.items.filter((f) => b.picked.has(f.path));
+    const total = files.reduce((sum, f) => sum + f.size, 0);
+    $$("picked").textContent = files.length ? `${filesWord(files.length)} · ${size(total)}` : "Нажмите на файлы";
+    $$("delete").disabled = !files.length;
+    const shown = b.shown();
+    $$("all").textContent = shown.length && shown.every((f) => b.picked.has(f.path)) ? "Снять все" : "Выбрать все";
+    $$("all").disabled = !shown.length;
+  }
+
+  function card(f) {
+    const li = spec.card(f);
+    li.classList.toggle("picked", b.picked.has(f.path));
+    // В режиме выбора нажатие по плитке (и по ссылкам в ней) только отмечает файл.
+    li.addEventListener("click", (e) => {
+      if (!b.selecting) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (b.picked.has(f.path)) b.picked.delete(f.path); else b.picked.add(f.path);
+      li.classList.toggle("picked", b.picked.has(f.path));
+      showPicked();
+    }, true);
+    const mark = el("span", "file-pick");
+    mark.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>';
+    li.append(mark);
+    return li;
+  }
+
+  b.show = () => {
+    const items = b.shown();
+    const total = b.items.reduce((sum, f) => sum + f.size, 0);
+    $$("total").textContent = `${b.items.length} · ${size(total)}`;
+    $$("select").disabled = !b.items.length;
+    $$("list").replaceChildren(...(items.length ? items.map(card)
+      : [el("li", "muted", b.items.length ? "Ничего не найдено" : spec.empty)]));
+    if (b.selecting) showPicked();
+  };
+
+  b.select = (on) => {
+    b.selecting = on;
+    b.picked = new Set();
+    dialog.classList.toggle("selecting", on);
+    $$("select").textContent = on ? "Готово" : "Выбрать";
+    $$("bar").hidden = !on;
+    b.show();
+  };
+
+  // Файл ушёл (крестик на плитке или удаление пачкой).
+  b.drop = (paths) => {
+    const gone = new Set(paths);
+    b.items = b.items.filter((f) => !gone.has(f.path));
+    fillKinds();
+    b.show();
+    spec.changed?.();
+  };
+
+  b.open = (items) => {
+    b.items = items;
+    $$("search").value = "";
+    $$("kind").value = "";
+    fillKinds();
+    b.select(false);
+    dialog.showModal();
+  };
+
+  $$("search").oninput = b.show;
+  $$("kind").onchange = b.show;
+  $$("select").onclick = () => b.select(!b.selecting);
+  dialog.addEventListener("close", () => { if (b.selecting) b.select(false); });
+  $$("all").onclick = () => {
+    const shown = b.shown();
+    const all = shown.every((f) => b.picked.has(f.path));
+    for (const f of shown) all ? b.picked.delete(f.path) : b.picked.add(f.path);
+    b.show();
+  };
+  $$("delete").onclick = async () => {
+    const files = b.items.filter((f) => b.picked.has(f.path));
+    if (!files.length) return;
+    let deleted;
+    try {
+      deleted = await spec.remove(files);
+    } catch (err) { return alert(err.message); }
+    if (!deleted) return;  // передумали в подтверждении
+    // Файлы, которых уже не было (удалили в другом окне), тоже убираем из списка.
+    b.select(false);
+    b.drop([...files.map((f) => f.path), ...deleted]);
+  };
+  return b;
 }
 
-function shownLibrary() {
-  const query = $("#library-search").value.trim().toLowerCase();
-  const chat = $("#library-chat").value, kind = $("#library-kind").value;
-  return library.filter((f) => f.path.toLowerCase().includes(query)
-    && (!chat || (chat === "-" ? !f.chats.length : f.chats.some((c) => c.id === chat)))
-    && (!kind || kindOf(f.path) === kind));
-}
+const chatFiles = fileBrowser("files", {
+  empty: "Пока пусто",
+  card(f) {
+    const li = el("li");
+    const name = baseName(f.path);
+    li.append(fileTile(f), deleteButton("Удалить " + name, async () => {
+      // Файлы из general уже в библиотеке: там они остаются.
+      const kept = f.path.startsWith("files/general/");
+      if (!confirm(kept ? `Убрать «${name}» из беседы? В библиотеке файл останется.` : `Удалить «${name}»?`)) return;
+      try {
+        await api(`/api/chats/${current.id}/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
+      } catch (err) { return alert(err.message); }
+      chatFiles.drop([f.path]);
+    }));
+    return li;
+  },
+  async remove(files) {
+    const kept = files.filter((f) => f.path.startsWith("files/general/")).length;
+    const note = kept === files.length ? " В библиотеке они останутся."
+      : kept ? ` ${filesWord(kept)} из них останутся в библиотеке.` : "";
+    if (!confirm(`Убрать из беседы ${filesWord(files.length)} (${size(files.reduce((s, f) => s + f.size, 0))})?${note}`)) return null;
+    const { deleted } = await api(`/api/chats/${current.id}/files/delete`, { method: "POST", json: { paths: files.map((f) => f.path) } });
+    return deleted;
+  },
+  changed: () => showSize(),
+});
 
-function setSelecting(on) {
-  selecting = on;
-  picked = new Set();
-  $("#library").classList.toggle("selecting", on);
-  $("#library-select").textContent = on ? "Готово" : "Выбрать";
-  $("#library-bar").hidden = !on;
-  showLibrary();
-}
+$("#export").onclick = () => {
+  // Имя — как у сервера: название беседы без недопустимых в именах файлов знаков.
+  const name = (current.title || "Беседа").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
+  saveFile(`/api/chats/${current.id}/export`, name + ".md");
+};
 
-// Внизу: сколько выбрано и сколько это места; «Выбрать все» — по текущему фильтру.
-function showPicked() {
-  const files = library.filter((f) => picked.has(f.path));
-  const total = files.reduce((sum, f) => sum + f.size, 0);
-  $("#library-picked").textContent = files.length ? `${filesWord(files.length)} · ${size(total)}` : "Нажмите на файлы";
-  $("#library-delete").disabled = !files.length;
-  const shown = shownLibrary();
-  const all = shown.length && shown.every((f) => picked.has(f.path));
-  $("#library-all").textContent = all ? "Снять все" : "Выбрать все";
-  $("#library-all").disabled = !shown.length;
-}
+$("#files-open").onclick = async () => {
+  let items;
+  try {
+    items = await api(`/api/chats/${current.id}/files`);
+  } catch (err) { return alert(err.message); }
+  chatFiles.open(items);
+};
+
+// --- Библиотека ---
 
 function libraryUrl(path, download) {
   return `/api/library/file?path=${encodeURIComponent(path)}` + (download ? "&download=true" : "");
 }
 
-// Плитка как в «Файлах беседы», под именем — беседы с этим файлом, размер и дата.
-function libraryCard(f) {
-  const li = el("li", "file-card");
-  li.classList.toggle("picked", picked.has(f.path));
-  // В режиме выбора нажатие по карточке (и по ссылкам в ней) только отмечает файл.
-  li.addEventListener("click", (e) => {
-    if (!selecting) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (picked.has(f.path)) picked.delete(f.path); else picked.add(f.path);
-    li.classList.toggle("picked", picked.has(f.path));
-    showPicked();
-  }, true);
-  const name = baseName(f.path);
-  const open = el("a");
-  open.href = libraryUrl(f.path);
-  open.target = "_blank";
-  open.rel = "noopener";
-  open.title = f.path;
-  fillTile(open, name, thumbUrl("/api/library", f.path, f.mtime, libraryUrl(f.path)));
-  const chats = el("div", "file-chats");
-  if (!f.chats.length) chats.append(el("span", "muted", "без беседы"));
-  f.chats.forEach((c, i) => {
-    const chat = el("a", "", c.title || "Новая беседа");
-    chat.href = "#" + c.id;
-    chat.title = "Открыть беседу";
-    chat.onclick = (e) => {
-      e.preventDefault();
-      $("#library").close();
-      side(false);
-      openChat(c.id);
-    };
-    if (i) chats.append(", ");
-    chats.append(chat);
-  });
-  const sub = el("div", "file-sub muted");
-  const get = el("a", "icon");
-  get.href = libraryUrl(f.path, true);
-  get.download = "";
-  get.title = "Скачать";
-  get.setAttribute("aria-label", "Скачать " + name);
-  get.innerHTML = '<svg width="16" height="16"><use href="#i-download"/></svg>';
-  if (iosApp) {
-    const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), name); };
-    open.onclick = get.onclick = share;
-  }
-  const day = new Date(f.mtime * 1000).toLocaleDateString("ru", { day: "2-digit", month: "2-digit", year: "2-digit" });
-  const info = el("span", "", `${size(f.size)} · ${day}`);
-  info.title = when(f.mtime);
-  sub.append(info, get);
-  const mark = el("span", "file-pick");
-  mark.innerHTML = '<svg width="14" height="14"><use href="#i-check"/></svg>';
-  li.append(open, chats, sub, mark, deleteButton("Удалить " + name, async () => {
-    const where = f.chats.map((c) => `«${c.title || "Новая беседа"}»`).join(", ");
-    if (!confirm(`Удалить «${name}» насовсем?` + (where ? ` Он пропадёт и из бесед: ${where}.` : ""))) return;
-    try {
-      await api(`/api/library/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
-    } catch (err) { return alert(err.message); }
-    library = library.filter((x) => x !== f);
-    fillFilters();
-    showLibrary();
-  }));
-  return li;
-}
-
-function showLibrary() {
-  const items = shownLibrary();
-  const total = library.reduce((sum, f) => sum + f.size, 0);
-  $("#library-total").textContent = `${library.length} · ${size(total)}`;
-  $("#library-select").disabled = !library.length;
-  $("#library-list").replaceChildren(...(items.length ? items.map(libraryCard)
-    : [el("li", "muted", library.length ? "Ничего не найдено" : "Пока пусто: сюда попадают вложения и файлы от модели")]));
-  if (selecting) showPicked();
-}
+const library = fileBrowser("library", {
+  empty: "Пока пусто: сюда попадают вложения и файлы от модели",
+  // Плитка как в «Файлах беседы», под именем — беседы с этим файлом, размер и дата.
+  card(f) {
+    const li = el("li", "file-card");
+    const name = baseName(f.path);
+    const open = el("a");
+    open.href = libraryUrl(f.path);
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.title = f.path;
+    fillTile(open, name, thumbUrl("/api/library", f.path, f.mtime, libraryUrl(f.path)));
+    const chats = el("div", "file-chats");
+    if (!f.chats.length) chats.append(el("span", "muted", "без беседы"));
+    f.chats.forEach((c, i) => {
+      const chat = el("a", "", c.title || "Новая беседа");
+      chat.href = "#" + c.id;
+      chat.title = "Открыть беседу";
+      chat.onclick = (e) => {
+        e.preventDefault();
+        $("#library").close();
+        side(false);
+        openChat(c.id);
+      };
+      if (i) chats.append(", ");
+      chats.append(chat);
+    });
+    const sub = el("div", "file-sub muted");
+    const get = el("a", "icon");
+    get.href = libraryUrl(f.path, true);
+    get.download = "";
+    get.title = "Скачать";
+    get.setAttribute("aria-label", "Скачать " + name);
+    get.innerHTML = '<svg width="16" height="16"><use href="#i-download"/></svg>';
+    if (iosApp) {
+      const share = (e) => { e.preventDefault(); shareFile(libraryUrl(f.path, true), name); };
+      open.onclick = get.onclick = share;
+    }
+    const day = new Date(f.mtime * 1000).toLocaleDateString("ru", { day: "2-digit", month: "2-digit", year: "2-digit" });
+    const info = el("span", "", `${size(f.size)} · ${day}`);
+    info.title = when(f.mtime);
+    sub.append(info, get);
+    li.append(open, chats, sub, deleteButton("Удалить " + name, async () => {
+      const where = f.chats.map((c) => `«${c.title || "Новая беседа"}»`).join(", ");
+      if (!confirm(`Удалить «${name}» насовсем?` + (where ? ` Он пропадёт и из бесед: ${where}.` : ""))) return;
+      try {
+        await api(`/api/library/file?path=${encodeURIComponent(f.path)}`, { method: "DELETE" });
+      } catch (err) { return alert(err.message); }
+      library.drop([f.path]);
+    }));
+    return li;
+  },
+  async remove(files) {
+    const chats = [...new Set(files.flatMap((f) => f.chats.map((c) => `«${c.title || "Новая беседа"}»`)))];
+    const where = chats.length ? ` Они пропадут и из бесед: ${chats.slice(0, 5).join(", ")}${chats.length > 5 ? ` и ещё ${chats.length - 5}` : ""}.` : "";
+    if (!confirm(`Удалить ${filesWord(files.length)} (${size(files.reduce((s, f) => s + f.size, 0))}) насовсем?${where}`)) return null;
+    const { deleted } = await api("/api/library/delete", { method: "POST", json: { paths: files.map((f) => f.path) } });
+    return deleted;
+  },
+});
 
 $("#library-open").onclick = async () => {
+  let items;
   try {
-    library = await api("/api/library");
+    items = await api("/api/library");
   } catch (err) { return alert(err.message); }
-  $("#library-search").value = "";
-  $("#library-chat").value = $("#library-kind").value = "";
-  fillFilters();
-  setSelecting(false);
-  $("#library").showModal();
-};
-$("#library-search").oninput = showLibrary;
-$("#library-chat").onchange = $("#library-kind").onchange = showLibrary;
-$("#library-select").onclick = () => setSelecting(!selecting);
-$("#library").addEventListener("close", () => { if (selecting) setSelecting(false); });
-$("#library-all").onclick = () => {
-  const shown = shownLibrary();
-  const all = shown.every((f) => picked.has(f.path));
-  for (const f of shown) all ? picked.delete(f.path) : picked.add(f.path);
-  showLibrary();
-};
-$("#library-delete").onclick = async () => {
-  const files = library.filter((f) => picked.has(f.path));
-  if (!files.length) return;
-  const chats = [...new Set(files.flatMap((f) => f.chats.map((c) => `«${c.title || "Новая беседа"}»`)))];
-  const where = chats.length ? ` Они пропадут и из бесед: ${chats.slice(0, 5).join(", ")}${chats.length > 5 ? ` и ещё ${chats.length - 5}` : ""}.` : "";
-  if (!confirm(`Удалить ${filesWord(files.length)} (${size(files.reduce((s, f) => s + f.size, 0))}) насовсем?${where}`)) return;
-  let deleted;
-  try {
-    ({ deleted } = await api("/api/library/delete", { method: "POST", json: { paths: files.map((f) => f.path) } }));
-  } catch (err) { return alert(err.message); }
-  const gone = new Set(deleted);
-  // Файлы, которых уже не было (удалили в другом окне), тоже убираем из списка.
-  library = library.filter((f) => !picked.has(f.path) && !gone.has(f.path));
-  fillFilters();
-  setSelecting(false);
+  library.open(items);
 };
 
 // --- Пользователи ---

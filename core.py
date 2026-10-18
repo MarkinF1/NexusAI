@@ -1069,21 +1069,35 @@ def links(uid, chat):
 
 def delete_chat_file(uid, chat, path):
     """Убирает файл из беседы. Копия в библиотеке остаётся. False — нет такого файла."""
+    return bool(delete_chat_files(uid, chat, [path]))
+
+
+def delete_chat_files(uid, chat, paths):
+    """Убирает файлы из беседы, копии в библиотеке остаются. Возвращает удалённые пути."""
     root = Path(workspace(uid, chat))
-    target = session_files.contained(root, path)
-    if target is None or not target.is_relative_to(root / "files"):
-        return False
-    try:
-        info = target.lstat()
-    except OSError:
-        return False
-    # Вторая жёсткая ссылка допустима только на файл библиотеки, как и при скачивании.
-    if not stat.S_ISREG(info.st_mode) or (
-            info.st_nlink > 1 and session_files.inode(info) not in session_files.shelved(library(uid))):
-        return False
-    target.unlink()
-    shelve(uid, chat)  # забыть запись о файле в карте беседы
-    return True
+    shelved = None
+    deleted = []
+    for path in paths:
+        target = session_files.contained(root, path)
+        if target is None or not target.is_relative_to(root / "files"):
+            continue
+        try:
+            info = target.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        # Вторая жёсткая ссылка допустима только на файл библиотеки, как и при скачивании.
+        if info.st_nlink > 1:
+            if shelved is None:
+                shelved = session_files.shelved(library(uid))
+            if session_files.inode(info) not in shelved:
+                continue
+        target.unlink()
+        deleted.append(path)
+    if deleted:
+        shelve(uid, chat)  # забыть записи о файлах в карте беседы
+    return deleted
 
 
 def chats_with(uid, path):
