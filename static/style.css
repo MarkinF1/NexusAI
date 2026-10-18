@@ -216,14 +216,20 @@ input, textarea {
 .msg-text th { background: var(--paper); font-weight: 600; }
 .msg-text a { color: var(--engine); }
 
-.msg-tool {
-  font: 12.5px/1.5 var(--mono); color: var(--muted); padding-bottom: 6px !important;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.msg-tool:has(+ :not(.msg-tool)) { padding-bottom: 16px !important; }
+/* Подряд идущие команды — одна группа с одним кольцом на рельсе */
+.msg-tools { font: 12.5px/1.5 var(--mono); color: var(--muted); }
+.msg-tool { cursor: pointer; }
 .msg-tool b { color: var(--engine); font-weight: 600; }
+.msg-tools:not(.open) .msg-tool:not(:last-child) { display: none; }
+.msg-tools:not(.open) .msg-tool { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.msg-tools.open .msg-tool { white-space: pre-wrap; padding-bottom: 6px; }
+.msg-tools.open .msg-tool:last-child { padding-bottom: 0; }
+.tools-more { display: block; font: inherit; color: var(--engine); background: none; border: 0; padding: 0 0 2px; cursor: pointer; }
+.tools-more::before { content: "▸ "; }
+.msg-tools.open .tools-more::before { content: "▾ "; }
+.tools-more[hidden] { display: none; }
 /* * { box-sizing } на псевдоэлементы не действует: рамку считаем в размере явно, центр — на рельсе */
-.msg-tool::after { box-sizing: border-box; left: 3px; top: 4px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--engine); background: var(--sheet); }
+.msg-tools::after { box-sizing: border-box; left: 3px; top: 4px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--engine); background: var(--sheet); }
 
 .msg-error { color: var(--error); white-space: pre-wrap; }
 .msg-error::after { left: 5px; top: 6px; width: 10px; height: 10px; background: var(--error); transform: rotate(45deg); }
@@ -556,7 +562,7 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   .msg-user::before { left: 26px; }
   .msg-user::after { left: 2px; }
   .msg-error::after, .thinking::after, .msg-transcribing::after { left: 3px; }
-  .msg-tool::after { left: 1px; }
+  .msg-tools::after { left: 1px; }
   .empty h2 { font-size: 24px; }
   #composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
   #tg-bar { padding: 6px 16px calc(10px + env(safe-area-inset-bottom)); }

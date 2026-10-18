@@ -384,7 +384,8 @@ def build_input(text, images):
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 
-def short(value, limit=300):
+# Команда в ленте раскрывается целиком; предел — от гигантских вставок и heredoc.
+def short(value, limit=4000):
     value = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return value if len(value) <= limit else value[:limit] + "…"
 

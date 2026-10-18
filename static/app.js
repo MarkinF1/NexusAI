@@ -680,6 +680,42 @@ function endTurn() {
   $("#feed").insertBefore(copyBar(text), $("#feed > .thinking"));
 }
 
+// Подряд идущие команды модели — одна группа: видна последняя строкой, «Ещё N»
+// раскрывает весь список, и в раскрытом виде каждая команда показана целиком.
+function toolLine(ev) {
+  const feed = $("#feed");
+  const thinking = $("#feed > .thinking");
+  let group = thinking ? thinking.previousElementSibling : feed.lastElementChild;
+  if (!group?.classList.contains("msg-tools")) {
+    group = el("div", "msg-tools");
+    const more = el("button", "tools-more");
+    more.type = "button";
+    more.onclick = () => toggleTools(group);
+    group.append(more);
+    feed.insertBefore(group, thinking);
+  }
+  const line = el("div", "msg-tool");
+  line.append(el("b", "", ev.name), " " + ev.input);
+  // Одну команду раскрывает щелчок по ней; выделение текста для копирования — не щелчок.
+  line.onclick = () => { if (getSelection().isCollapsed) toggleTools(group); };
+  group.append(line);
+  toolsLabel(group);
+}
+
+function toggleTools(group) {
+  group.classList.toggle("open");
+  toolsLabel(group);
+}
+
+function toolsLabel(group) {
+  const count = group.querySelectorAll(".msg-tool").length;
+  const more = group.querySelector(".tools-more");
+  const open = group.classList.contains("open");
+  more.hidden = count < 2;
+  more.textContent = open ? "Свернуть" : `Ещё ${count - 1} ${plural(count - 1, "команда", "команды", "команд")}`;
+  more.setAttribute("aria-expanded", open);
+}
+
 // Последний запрос беседы: его можно повторить или изменить, пока после него не было сжатия.
 let lastAsk = null;
 
@@ -713,9 +749,7 @@ function render(ev) {
     node = el("div", "msg-text");
     node.innerHTML = DOMPurify.sanitize(marked.parse(ev.text));
   } else if (ev.kind === "tool") {
-    node = el("div", "msg-tool");
-    node.append(el("b", "", ev.name), " " + ev.input);
-    node.title = ev.input;
+    toolLine(ev);
   } else if (ev.kind === "warning") {
     node = el("div", "msg-error", ev.text);
   } else if (ev.kind === "error") {
