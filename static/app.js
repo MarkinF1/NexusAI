@@ -51,7 +51,19 @@ function engineLabel(engine, text = NAME[engine]) {
 // Веб-приложение с экрана «Домой» на iOS открывает <a download> прямо в своём окне,
 // где нет кнопки «Назад», и выйти из просмотра можно только перезапуском.
 // Поэтому там файл отдаётся через системное меню «Поделиться».
+// Правило: любое скачивание — ссылка с onclick → shareFile при iosApp, или saveFile(url, name).
 const iosApp = navigator.standalone === true;
+
+// Скачать по кнопке (не по ссылке): на iOS-приложении — «Поделиться», иначе обычная загрузка.
+function saveFile(url, name) {
+  if (iosApp) return shareFile(url, name);
+  const a = el("a");
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
 
 function fileLink(path) {
   const name = path.split("/").pop();
@@ -1258,12 +1270,9 @@ function showFiles() {
 }
 
 $("#export").onclick = () => {
-  const a = el("a");
-  a.href = `/api/chats/${current.id}/export`;
-  a.download = "";
-  document.body.append(a);
-  a.click();
-  a.remove();
+  // Имя — как у сервера: название беседы без недопустимых в именах файлов знаков.
+  const name = (current.title || "Беседа").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
+  saveFile(`/api/chats/${current.id}/export`, name + ".md");
 };
 
 $("#files-open").onclick = async () => {

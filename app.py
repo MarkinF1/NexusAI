@@ -256,7 +256,7 @@ def export(chat: str, user=Depends(current_user)):
     """Беседа одним Markdown-файлом."""
     meta = own_chat(user, chat)
     body = core.export_markdown(meta, core.history(user["id"], chat))
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", meta["title"] or "Беседа").strip()[:80] or "Беседа"
+    name = re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", meta["title"] or "Беседа")).strip()[:80] or "Беседа"
     return Response(body, media_type="text/markdown; charset=utf-8", headers={
         "Content-Disposition": f"attachment; filename=\"chat.md\"; filename*=UTF-8''{quote(name + '.md')}"})
 
