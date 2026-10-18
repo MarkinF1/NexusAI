@@ -1324,27 +1324,15 @@ function transcriptNode(ev) {
   const ask = el("div", "transcript-ask");
   const yes = el("button", "primary", "Да");
   const fix = el("button", "", "Исправить");
-  const no = el("button", "", "Нет");
-  yes.type = fix.type = no.type = "button";
+  yes.type = fix.type = "button";
   fix.title = "Перенести текст в поле ввода, поправить и отправить";
   yes.onclick = async () => {
-    yes.disabled = no.disabled = true;
+    yes.disabled = true;
     try { await sendMessage(ev.text, [], ev.voice); } catch (err) { alert(err.message); }
-    yes.disabled = no.disabled = false;
+    yes.disabled = false;
   };
   fix.onclick = () => startFix(ev);
-  no.onclick = async () => {
-    yes.disabled = no.disabled = true;
-    try {
-      await api(`/api/chats/${current.id}/voice/${ev.voice}/decline`, { method: "POST" });
-      render({ kind: "voice_answer", voice: ev.voice, ok: false });
-      count++;
-    } catch (err) {
-      alert(err.message);
-      yes.disabled = no.disabled = false;
-    }
-  };
-  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, fix, no);
+  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, fix);
   node.append(label, el("div", "transcript-text", ev.text), ask);
   return node;
 }
