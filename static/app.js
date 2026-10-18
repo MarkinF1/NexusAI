@@ -125,48 +125,47 @@ function deviceName() {
     : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Браузер";
 }
 
+// Галочка под именем в «Настройках». Включение просит разрешение, подписывает устройство и
+// присылает пробное уведомление; выключение отписывает. Не поддерживается — галочка серая и почему.
 async function showPush() {
   const box = $("#push-account");
-  const head = el("div", "push-head", "Уведомления «Ответ готов»");
-  const note = (text) => box.replaceChildren(head, el("div", "muted", text));
+  const l = el("label", "check");
+  const input = el("input");
+  input.type = "checkbox";
+  l.append(input, "Уведомлять о новых сообщениях");
+  const hint = (text) => { input.disabled = true; box.replaceChildren(l, el("div", "muted", text)); };
+  box.replaceChildren(l);
   if (!pushReady) {
-    return note(!window.isSecureContext ? "Нужен вход на сайт по https."
+    return hint(!window.isSecureContext ? "Нужен вход на сайт по https."
       : /iPhone|iPad/.test(navigator.userAgent) && !iosApp
         ? "На iPhone — только из приложения: «Поделиться» → «На экран Домой» (iOS 16.4+)."
         : "Этот браузер не поддерживает уведомления.");
   }
-  if (Notification.permission === "denied") return note("Запрещены в настройках браузера или телефона.");
+  if (Notification.permission === "denied") return hint("Запрещены в настройках браузера или телефона.");
   const reg = await swReady;
-  const sub = await reg?.pushManager.getSubscription();
-  const buttons = el("div", "actions");
-  if (sub) {
-    const test = el("button", "", "Проверить");
-    test.onclick = () => api("/api/push/test", { method: "POST" }).catch((err) => alert(err.message));
-    const off = el("button", "", "Выключить");
-    off.onclick = async () => {
-      try {
-        await api("/api/push/remove", { method: "POST", json: { endpoint: sub.endpoint } });
-        await sub.unsubscribe();
-      } catch (err) { alert(err.message); }
-      showPush();
-    };
-    buttons.append(test, off);
-    box.replaceChildren(head, el("div", "muted", "Включены на этом устройстве: придут, когда ответ готов, а беседа не открыта."), buttons);
-  } else {
-    const on = el("button", "", "Включить на этом устройстве");
-    on.onclick = async () => {
-      try {
+  let sub = await reg?.pushManager.getSubscription();
+  input.checked = !!sub;
+  input.onchange = async () => {
+    input.disabled = true;
+    try {
+      if (input.checked) {
         // Разрешение — сразу по нажатию: после await iOS сочтёт запрос не пользовательским.
         if (await Notification.requestPermission() !== "granted") return showPush();
         const { key } = await api("/api/push/key");
-        const fresh = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
-        await api("/api/push", { method: "POST", json: { subscription: fresh.toJSON(), label: deviceName() } });
-      } catch (err) { alert(err.message); }
-      showPush();
-    };
-    buttons.append(on);
-    box.replaceChildren(head, buttons);
-  }
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
+        await api("/api/push", { method: "POST", json: { subscription: sub.toJSON(), label: deviceName() } });
+        api("/api/push/test", { method: "POST" }).catch(() => {});  // пробное — видно, что работает
+      } else if (sub) {
+        await api("/api/push/remove", { method: "POST", json: { endpoint: sub.endpoint } });
+        await sub.unsubscribe();
+        sub = null;
+      }
+    } catch (err) {
+      alert(err.message);
+      input.checked = !!sub;
+    }
+    input.disabled = false;
+  };
 }
 
 // Свёрнутая вкладка или приложение — не «смотрит» беседу: закрываем поток событий, чтобы

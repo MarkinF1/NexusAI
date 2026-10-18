@@ -571,10 +571,11 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
 }
 
 /* Уведомления в «Настройках» */
-#push-account { margin-top: 12px; display: grid; gap: 6px; font-size: 13.5px; }
+#push-account { margin-top: 10px; display: grid; gap: 4px; font-size: 14px; }
 #push-account:empty { display: none; }
-#push-account .push-head { font-weight: 500; font-size: 14px; }
-#push-account .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+#push-account .check { align-items: flex-start; }
+#push-account .check input { margin-top: 3px; flex: none; }
+#push-account .muted { font-size: 12.5px; padding-left: 26px; }
 
 /* Перетаскивание файлов: поле ввода подсвечено, поверх — подсказка */
 #composer { position: relative; }

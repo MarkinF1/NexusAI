@@ -218,7 +218,7 @@ def push_unsubscribe(body: PushEndpoint, user=Depends(current_user)):
 
 @app.post("/api/push/test")
 async def push_test(user=Depends(current_user)):
-    if not await push.notify(user["id"], "NexusAI", "Уведомления работают"):
+    if not await push.notify(user["id"], "NexusAI", "Уведомления включены"):
         raise HTTPException(502, "Не удалось отправить: проверьте, что уведомления включены")
     return {}
 
