@@ -1332,7 +1332,7 @@ function transcriptNode(ev) {
     yes.disabled = false;
   };
   fix.onclick = () => startFix(ev);
-  ask.append(el("span", "", "Всё ли верно, отправлять?"), yes, fix);
+  ask.append(el("span", "", "Отправить?"), yes, fix);
   node.append(label, el("div", "transcript-text", ev.text), ask);
   return node;
 }
