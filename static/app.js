@@ -2328,25 +2328,118 @@ const ENGINE_STATUS = {
   missing: "Не установлена",
   error: "Недоступна",
   checking: "Проверяется",
+  installing: "Устанавливается",
+  install_error: "Ошибка установки",
+  authorizing: "Выполняется вход",
 };
 
-async function waitEngineLogin(engine) {
-  for (let attempt = 0; attempt < 450; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    let login;
-    try { login = await api(`/api/engines/${engine}/login`); } catch { return; }
-    if (login.running) continue;
-    if (login.complete) {
-      alert("Вход завершён");
-      await openGeneral();
-      models = await api("/api/models");
-      await refreshMe();
-    } else if (login.error) {
-      alert(login.error);
-      await openGeneral();
+const engineInstallWatchers = new Set();
+const engineLoginWatchers = new Set();
+const engineChecks = new Map();
+const engineCheckErrors = new Map();
+let engineRefreshSequence = 0;
+
+async function refreshEngineSettings() {
+  const sequence = ++engineRefreshSequence;
+  const items = await api("/api/engines");
+  if (sequence !== engineRefreshSequence) return;
+  const section = document.querySelector(".general-settings .engine-settings");
+  // Update only this block: never discard unsaved general settings while polling.
+  if (section) section.replaceWith(engineSettings(items));
+}
+
+function checkEngineSettings(engine) {
+  if (engineChecks.has(engine)) return engineChecks.get(engine);
+  engineCheckErrors.delete(engine);
+  const task = Promise.resolve().then(async () => {
+    try {
+      // This runs discovery, CLI auth status and a probe; GET alone is only a snapshot.
+      await api(`/api/engines/${engine}/check`, { method: "POST" });
+    } catch (err) {
+      engineCheckErrors.set(engine, err.message || "Не удалось проверить сеть");
+    } finally {
+      engineChecks.delete(engine);
+      try { await refreshEngineSettings(); } catch { /* Settings may have been closed/offline. */ }
     }
-    return;
+  });
+  engineChecks.set(engine, task);
+  return task;
+}
+
+function startEngineChecks(items) {
+  // Independent requests: a slow provider must not delay the other provider's result.
+  const tasks = [];
+  for (const item of items) {
+    if (!item.installing && item.state !== "authorizing") tasks.push(checkEngineSettings(item.engine));
   }
+  Promise.all(tasks).then(async () => {
+    models = await api("/api/models");
+    await refreshMe();
+  }).catch(() => {});
+}
+
+async function waitEngineInstall(engine) {
+  if (engineInstallWatchers.has(engine)) return;
+  engineInstallWatchers.add(engine);
+  try {
+    for (let attempt = 0; attempt < 600; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      let install;
+      try {
+        install = await api(`/api/engines/${engine}/install`);
+        if (install.running) await refreshEngineSettings();
+      } catch { continue; }
+      if (!install.running) {
+        const checked = checkEngineSettings(engine);
+        await refreshEngineSettings();
+        await checked;
+        models = await api("/api/models");
+        await refreshMe();
+        return;
+      }
+    }
+  } catch { /* A lost connection must not leave a rejected background task. */ }
+  finally { engineInstallWatchers.delete(engine); }
+}
+
+async function installEngine(item, button) {
+  if (!confirm(`Установить ${item.name}? Будет выполнен официальный установщик ${item.install_url} от пользователя сервиса, без sudo.`)) return;
+  button.disabled = true;
+  button.textContent = "Запускаем установку…";
+  try {
+    await api(`/api/engines/${item.engine}/install`, { method: "POST" });
+    await refreshEngineSettings();
+    waitEngineInstall(item.engine);
+  } catch (err) {
+    alert(err.message);
+    button.disabled = false;
+    button.textContent = "Повторить установку";
+  }
+}
+
+async function waitEngineLogin(engine) {
+  if (engineLoginWatchers.has(engine)) return;
+  engineLoginWatchers.add(engine);
+  try {
+    for (let attempt = 0; attempt < 450; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      let login;
+      try { login = await api(`/api/engines/${engine}/login`); } catch { return; }
+      if (login.running) continue;
+      const checked = checkEngineSettings(engine);
+      await refreshEngineSettings();
+      await checked;
+      if (login.complete) {
+        alert("Вход завершён");
+        models = await api("/api/models");
+        await refreshMe();
+      } else if (login.error) {
+        alert(login.error);
+      }
+      return;
+    }
+  } catch { /* Recover via a fresh check when settings are opened again. */ }
+  finally { engineLoginWatchers.delete(engine); }
 }
 
 async function loginEngine(engine) {
@@ -2370,33 +2463,60 @@ async function loginEngine(engine) {
     }
   }
   waitEngineLogin(engine);
+  await refreshEngineSettings();
 }
 
 function engineSettings(items) {
   const section = el("section", "engine-settings");
   section.append(el("h4", "", "Подключение нейросетей"),
-    el("p", "muted", "Сервис проверяет CLI, вход и пробный ответ при каждом запуске. Исчерпанный лимит не отключает сеть."));
-  for (const item of items) {
+    el("p", "muted", "При открытии настроек проверяются CLI, вход и пробный ответ каждой сети. Исчерпанный лимит не отключает сеть."));
+  for (let item of items) {
+    if (!item.installing && item.state !== "authorizing") {
+      if (engineChecks.has(item.engine)) item = {...item, state: "checking", login: false, message: "Проверяем состояние в системе…"};
+      else if (engineCheckErrors.has(item.engine)) item = {...item, state: "error", login: false,
+        verification_failed: true, message: engineCheckErrors.get(item.engine)};
+    }
     const row = el("div", `engine-state ${item.state}`);
     const text = el("div");
     text.append(el("strong", "", item.name), el("span", "state", ENGINE_STATUS[item.state] || item.state),
       el("small", "muted", item.message));
     const actions = el("div", "actions");
-    if (item.login && item.installed) {
+    const busy = item.installing || item.state === "authorizing" || item.state === "checking";
+    if (!item.installed && !busy && !item.verification_failed) {
+      const install = el("button", "primary", item.install_error ? "Повторить установку" : "Установить");
+      install.type = "button";
+      install.onclick = () => installEngine(item, install);
+      actions.append(install);
+    }
+    if (item.login && item.installed && !busy && !item.verification_failed) {
       const login = el("button", "primary", "Авторизоваться");
       login.type = "button";
       login.onclick = () => loginEngine(item.engine);
       actions.append(login);
     }
-    if (item.installed) {
+    if (!busy) {
       const check = el("button", "", "Проверить");
       check.type = "button";
       check.onclick = async () => {
         check.disabled = true;
-        try { await api(`/api/engines/${item.engine}/check`, { method: "POST" }); await openGeneral(); }
+        try {
+          const checked = checkEngineSettings(item.engine);
+          await refreshEngineSettings();
+          await checked;
+          models = await api("/api/models");
+          await refreshMe();
+        }
         catch (err) { alert(err.message); check.disabled = false; }
       };
       actions.append(check);
+    }
+    if (item.installing) waitEngineInstall(item.engine);
+    if (item.state === "authorizing") {
+      const resume = el("button", "", "Открыть вход");
+      resume.type = "button";
+      resume.onclick = () => loginEngine(item.engine);
+      actions.append(resume);
+      waitEngineLogin(item.engine);
     }
     row.append(text, actions);
     section.append(row);
@@ -2410,6 +2530,7 @@ async function openGeneral() {
   let list, engineStates;
   try { [list, engineStates] = await Promise.all([api("/api/settings"), api("/api/engines")]); }
   catch (e) { alert(e.message); return; }
+  startEngineChecks(engineStates);
   card = null;
   document.querySelectorAll("#users-list button").forEach((b) => b.classList.remove("active"));
   const form = el("form", "general-settings");

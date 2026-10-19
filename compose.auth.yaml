@@ -1,0 +1,15 @@
+# Optional: mount existing Linux CLI credentials, not CLI executables.
+# Source directories must already exist and be writable by the container UID.
+services:
+  nexus:
+    volumes:
+      - type: bind
+        source: ${NEXUS_CLAUDE_DIR:?Set NEXUS_CLAUDE_DIR in .env.docker}
+        target: /home/nexus/.claude
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NEXUS_CODEX_DIR:?Set NEXUS_CODEX_DIR in .env.docker}
+        target: /home/nexus/.codex
+        bind:
+          create_host_path: false

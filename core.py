@@ -20,6 +20,7 @@ from pathlib import Path
 
 import session_files
 import settings
+import installers
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("NEXUS_DATA", os.path.join(HERE, "data")))
@@ -358,6 +359,20 @@ def installed(engine):
     return bool(binary) and os.access(binary, os.X_OK)
 
 
+def rescan_and_check(engine):
+    """Discover newly installed CLI without restarting the site or its active chats."""
+    global CLAUDE_BIN, CODEX_BIN, _codex_version_cache
+    if engine not in ENGINES:
+        raise ValueError("Неизвестная нейросеть")
+    binary = newest_executable(engine, os.environ.get(engine.upper() + "_BIN"))
+    if engine == "claude":
+        CLAUDE_BIN = binary or os.path.expanduser("~/.local/bin/claude")
+    else:
+        CODEX_BIN = binary
+        _codex_version_cache = None
+    return check_engine(engine)
+
+
 def codex_service_home():
     """Отдельный CODEX_HOME проверки: токен общий, каталог соответствует CLI сайта."""
     folder = os.path.join(DATA, "engine", "codex")
@@ -411,9 +426,11 @@ def check_engine(engine):
     else:
         code, output = _run_check(engine)
         if code:
-            state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": "login",
-                     "available": False, "installed": True, "login": True,
-                     "message": "Аккаунт не подключён", "checked": now}
+            failed = code < 0
+            state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": "error" if failed else "login",
+                     "available": False, "installed": True, "login": not failed,
+                     "message": "Не удалось проверить вход: CLI не ответил или не запустился" if failed else "Аккаунт не подключён",
+                     "checked": now}
         else:
             code, output = _run_check(engine, True)
             low = output.lower()
@@ -429,6 +446,7 @@ def check_engine(engine):
             state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": kind,
                      "available": available, "installed": True, "login": not available,
                      "message": message[:300], "checked": now}
+            state["login"] = kind == "login"
     with _engine_lock:
         _engine_states[engine] = state
     return dict(state)
@@ -455,6 +473,23 @@ def engine_statuses():
                            "installed": present, "login": present,
                            "message": "Проверка ещё не выполнена" if present else "CLI не установлен на сервере",
                            "checked": 0})
+    for item in result:
+        name = item["engine"]
+        install = installers.status(name)
+        item["install_url"] = installers.SOURCES[name][0]
+        item["installing"] = install["running"]
+        item["install_error"] = install.get("error", "")
+        if install["running"]:
+            item.update(state="installing", available=False, login=False, message=install["message"])
+        elif install.get("error") and not item["installed"]:
+            # Historical task failure is a detail, not a substitute for current system state.
+            item["message"] = item.get("message", "CLI не установлен") + ". " + install["error"]
+        else:
+            with _login_lock:
+                logging_in = _login_sessions.get(name, {}).get("running")
+            if logging_in:
+                item.update(state="authorizing", available=False, login=False,
+                            message="Ожидается завершение входа в аккаунт")
     return result
 
 
@@ -533,14 +568,15 @@ def _watch_login(engine, session):
                     session["device_code"] = found.group(0)
                 session["condition"].notify_all()
         code = proc.wait()
+        if code == 0:
+            # Complete login only after the probe: UI must not read the previous login state.
+            check_engine(engine)
         with session["condition"]:
             session["running"] = False
             session["complete"] = code == 0
             if code:
                 session["error"] = "Вход не завершён"
             session["condition"].notify_all()
-        if code == 0:
-            check_engine(engine)
     except Exception as exc:
         with session["condition"]:
             session["running"] = False

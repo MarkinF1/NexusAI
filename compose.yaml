@@ -1,0 +1,40 @@
+name: ${NEXUS_DOCKER_PROJECT:-nexusai-docker}
+services:
+  nexus:
+    image: ${NEXUS_DOCKER_IMAGE:-nexusai:local}
+    build:
+      context: .
+      args:
+        NEXUS_UID: ${NEXUS_UID:-1000}
+        NEXUS_GID: ${NEXUS_GID:-1000}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 60s
+    cap_drop: [ALL]
+    # Nested CLI sandboxes need user/mount/network namespaces. No privileged,
+    # SYS_ADMIN, host PID/network namespace or Docker socket is granted.
+    # These exceptions relax Docker's syscall/LSM filtering; see README.
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined
+      - apparmor:unconfined
+      - systempaths=unconfined
+    environment:
+      NEXUS_HOST: 0.0.0.0
+      NEXUS_PORT: "8080"
+      NEXUS_DATA: /data
+      NEXUS_TRUSTED_PROXY: ${NEXUS_TRUSTED_PROXY:-127.0.0.1}
+    ports:
+      - "${NEXUS_DOCKER_BIND:-127.0.0.1}:${NEXUS_DOCKER_PORT:-8081}:8080"
+    volumes:
+      - data:/data
+      - home:/home/nexus
+    healthcheck:
+      test: [CMD, python, /app/docker/entrypoint.py, health]
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+volumes:
+  data:
+  home:

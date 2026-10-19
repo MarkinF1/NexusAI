@@ -1,0 +1,11 @@
+# Deny by default: no .env, credentials, chats, Git history, venv or user files.
+**
+!Dockerfile
+!requirements.txt
+!/*.py
+!static/
+!static/**
+!tools/
+!tools/soffice
+!docker/
+!docker/*.py

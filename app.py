@@ -73,6 +73,7 @@ async def lifespan(app):
     await stop_task(poll)
     await stop_task(bot_task)
     core.stop_logins()
+    core.installers.stop()
 
 
 # Смена токена приходит из обработчика запроса — он в том же цикле событий.
@@ -777,7 +778,7 @@ def engine_statuses(user=Depends(admin_user)):
 @app.post("/api/engines/{engine}/check")
 async def check_engine(engine: str, user=Depends(admin_user)):
     try:
-        return await asyncio.to_thread(core.check_engine, engine)
+        return await asyncio.to_thread(core.rescan_and_check, engine)
     except ValueError as exc:
         raise HTTPException(404, str(exc))
 
@@ -788,6 +789,22 @@ async def engine_login(engine: str, user=Depends(admin_user)):
         return await asyncio.to_thread(core.start_login, engine)
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/engines/{engine}/install")
+def engine_install(engine: str, user=Depends(admin_user)):
+    try:
+        return core.installers.start(engine)
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/engines/{engine}/install")
+def engine_install_state(engine: str, user=Depends(admin_user)):
+    try:
+        return core.installers.status(engine)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.get("/api/engines/{engine}/login")
