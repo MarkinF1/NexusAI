@@ -79,11 +79,6 @@ class Parameter:
         return result
 
 
-ENGINES = Parameter(
-    "engines", "Нейросети сайта",
-    "Какие нейросети работают на сайте и в Telegram. Подключаются только те, что установлены на сервере.",
-    ["claude", "codex"], ("NEXUS_ENGINES",), ("claude", "codex"),
-    labels={"claude": "Claude", "codex": "Codex"})
 def codex_catalog():
     import core  # здесь, а не наверху: core сам импортирует настройки
     return [("", "Первая в каталоге Codex")] + [(m["slug"], m["name"]) for m in core.codex_models()]
@@ -91,11 +86,11 @@ def codex_catalog():
 
 CLAUDE_MODEL = Parameter(
     "claude_model", "Модель Claude по умолчанию", "С какой моделью создаются новые беседы Claude.",
-    "sonnet", ("NEXUS_MODEL",), ("opus", "sonnet", "haiku"), shown_if=("engines", "claude"), aliases=("model",))
+    "sonnet", ("NEXUS_MODEL",), ("opus", "sonnet", "haiku"), aliases=("model",))
 CODEX_MODEL = Parameter(
     "codex_model", "Модель Codex по умолчанию",
     "С какой моделью создаются новые беседы Codex. Список — из каталога самого Codex.",
-    "", ("NEXUS_CODEX_MODEL",), options=codex_catalog, shown_if=("engines", "codex"))
+    "", ("NEXUS_CODEX_MODEL",), options=codex_catalog)
 # Модель по умолчанию для новой беседы каждой сети.
 DEFAULT_MODEL = {"claude": CLAUDE_MODEL, "codex": CODEX_MODEL}
 TIMEOUT = Parameter(
@@ -131,7 +126,7 @@ UPDATE_WAIT = Parameter(
     1800, ("NEXUS_UPDATE_WAIT",))
 
 # Порядок — порядок полей в форме.
-PARAMETERS = (ENGINES, CLAUDE_MODEL, CODEX_MODEL, TIMEOUT, COMPACT_MB, USAGE_REFRESH, STT_MODEL, STT_LANG, TG_TOKEN, UPDATE_WAIT)
+PARAMETERS = (CLAUDE_MODEL, CODEX_MODEL, TIMEOUT, COMPACT_MB, USAGE_REFRESH, STT_MODEL, STT_LANG, TG_TOKEN, UPDATE_WAIT)
 BY_NAME = {p.name: p for p in PARAMETERS}
 
 _values = {}
@@ -205,7 +200,8 @@ def load():
             values[param.name] = initial(param, file_env)
     # Незнакомые параметры (из более новой версии) не теряем; прежние имена — уже перенесены.
     renamed = {a for p in PARAMETERS for a in p.aliases}
-    values.update((k, v) for k, v in stored.items() if k not in BY_NAME and k not in renamed)
+    obsolete = {"engines"}  # список сетей теперь определяется проверкой установки и входа
+    values.update((k, v) for k, v in stored.items() if k not in BY_NAME and k not in renamed and k not in obsolete)
     with _lock:
         _values.clear()
         _values.update(values)

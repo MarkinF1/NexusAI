@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import stat
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -37,6 +38,7 @@ MODELS = {
 }
 CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 ENGINES = ("claude", "codex")
+ENGINE_NAMES = {"claude": "Claude", "codex": "Codex"}
 WINDOWS = ("five_hour", "seven_day")
 # Защитный предел: обычно ответ останавливают кнопкой «Стоп».
 # Строки stream-json с картинками и выводом инструментов длиннее лимита asyncio (64 КБ).
@@ -318,27 +320,275 @@ def delete_chat(uid, meta, files=True):
 
 # --- Модели ---
 
+_engine_states = {}
+_engine_lock = threading.Lock()
+_login_sessions = {}
+_login_lock = threading.Lock()
+_codex_version_cache = None
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+URL = re.compile(r"https://[^\s]+")
+DEVICE_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4}\b")
+LIMIT_ERRORS = ("usage limit", "rate limit", "limit exceeded", "usage_limit", "quota exceeded")
+AUTH_ERRORS = ("not logged in", "log in", "login required", "unauthorized", "authentication",
+               "invalid token", "token expired", "401")
+
+
+def installed(engine):
+    binary = CLAUDE_BIN if engine == "claude" else CODEX_BIN
+    return bool(binary) and os.access(binary, os.X_OK)
+
+
+def codex_service_home():
+    """Отдельный CODEX_HOME проверки: токен общий, каталог соответствует CLI сайта."""
+    folder = os.path.join(DATA, "engine", "codex")
+    os.makedirs(folder, exist_ok=True)
+    link_creds(os.path.join(folder, "auth.json"), CODEX_HOST_AUTH)
+    config = os.path.join(folder, "config.toml")
+    if not os.path.exists(config):
+        with open(config, "w") as f:
+            f.write('sandbox_mode = "read-only"\napproval_policy = "never"\n')
+    return folder
+
+
+def _command(engine, probe=False):
+    if engine == "claude":
+        if probe:
+            return [CLAUDE_BIN, "-p", "Ответь только: OK", "--output-format", "json",
+                    "--no-session-persistence", "--safe-mode", "--tools", ""]
+        return [CLAUDE_BIN, "auth", "status"]
+    if probe:
+        return [CODEX_BIN, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+                "--json", "--skip-git-repo-check", "-s", "read-only", "Ответь только: OK"]
+    return [CODEX_BIN, "login", "status"]
+
+
+def _engine_env(engine):
+    if engine == "claude":
+        return model_env(CLAUDE_CONFIG_DIR=os.path.dirname(HOST_CREDS))
+    return model_env(CODEX_HOME=codex_service_home())
+
+
+def _run_check(engine, probe=False):
+    try:
+        result = subprocess.run(_command(engine, probe), cwd=HERE, env=_engine_env(engine),
+                                text=True, capture_output=True, timeout=90)
+        return result.returncode, (result.stdout + "\n" + result.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return -1, "проверка не ответила за 90 секунд"
+    except OSError as exc:
+        return -1, str(exc)
+
+
+def check_engine(engine):
+    """Проверить установку, вход и короткий настоящий ответ сети."""
+    if engine not in ENGINES:
+        raise ValueError("Неизвестная нейросеть")
+    now = time.time()
+    if not installed(engine):
+        state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": "missing",
+                 "available": False, "installed": False, "login": False,
+                 "message": "CLI не установлен на сервере", "checked": now}
+    else:
+        code, output = _run_check(engine)
+        if code:
+            state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": "login",
+                     "available": False, "installed": True, "login": True,
+                     "message": "Аккаунт не подключён", "checked": now}
+        else:
+            code, output = _run_check(engine, True)
+            low = output.lower()
+            if code == 0:
+                kind, available, message = "available", True, "Доступна и отвечает"
+            elif any(word in low for word in LIMIT_ERRORS):
+                kind, available, message = "limited", True, "Подключена, но лимит сейчас исчерпан"
+            elif any(word in low for word in AUTH_ERRORS):
+                kind, available, message = "login", False, "Вход устарел или не завершён"
+            else:
+                kind, available = "error", False
+                message = output.splitlines()[-1] if output else "Не удалось получить ответ"
+            state = {"engine": engine, "name": ENGINE_NAMES[engine], "state": kind,
+                     "available": available, "installed": True, "login": not available,
+                     "message": message[:300], "checked": now}
+    with _engine_lock:
+        _engine_states[engine] = state
+    return dict(state)
+
+
+def refresh_engines(engine=None):
+    """Проверка всех поддерживаемых сетей при старте и по кнопке администратора."""
+    names = (engine,) if engine else ENGINES
+    return [check_engine(name) for name in names]
+
+
+def engine_statuses():
+    """Все поддерживаемые сети, включая отсутствующие и ещё не проверенные."""
+    with _engine_lock:
+        known = {name: dict(value) for name, value in _engine_states.items()}
+    result = []
+    for engine in ENGINES:
+        if engine in known:
+            result.append(known[engine])
+        else:
+            present = installed(engine)
+            result.append({"engine": engine, "name": ENGINE_NAMES[engine],
+                           "state": "checking" if present else "missing", "available": present,
+                           "installed": present, "login": present,
+                           "message": "Проверка ещё не выполнена" if present else "CLI не установлен на сервере",
+                           "checked": 0})
+    return result
+
+
 def engines():
-    """Сети, отмеченные в общих настройках, которые есть в системе."""
-    listed = settings.get(settings.ENGINES.name)
-    installed = {"claude": bool(CLAUDE_BIN) and os.access(CLAUDE_BIN, os.X_OK), "codex": bool(CODEX_BIN)}
-    return [e for e in ENGINES if e in listed and installed[e]]
+    """Установленные, подключённые и ответившие сети (лимит не отключает сеть)."""
+    return [item["engine"] for item in engine_statuses() if item["available"]]
+
+
+def codex_version():
+    global _codex_version_cache
+    if _codex_version_cache is not None:
+        return _codex_version_cache
+    if not installed("codex"):
+        return ""
+    try:
+        output = subprocess.check_output([CODEX_BIN, "--version"], text=True, timeout=10,
+                                         stderr=subprocess.DEVNULL)
+        found = re.search(r"(\d+\.\d+\.\d+)", output)
+        _codex_version_cache = found.group(1) if found else ""
+    except (OSError, subprocess.SubprocessError):
+        _codex_version_cache = ""
+    return _codex_version_cache
+
+
+def _codex_catalog_file():
+    """Свежий каталог, созданный той же версией CLI, что запускает сайт."""
+    version = codex_version()
+    candidates = [os.path.join(DATA, "engine", "codex", "models_cache.json")]
+    candidates += glob.glob(os.path.join(DATA, "users", "*", "codex-home", "models_cache.json"))
+    candidates.append(MODELS_CACHE)
+    found = []
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("client_version") == version:
+                found.append((os.path.getmtime(path), data))
+        except (OSError, ValueError):
+            continue
+    return max(found, default=(0, None))[1]
 
 
 def codex_models():
-    """Видимые модели из каталога самого codex в порядке приоритета."""
-    if not CODEX_BIN:
+    """Видимые модели из каталога именно той версии Codex, которую запускает сайт."""
+    if not installed("codex"):
         return []
-    try:
-        with open(MODELS_CACHE, encoding="utf-8") as f:
-            listed = [m for m in json.load(f)["models"] if m.get("visibility") == "list"]
-    except (OSError, ValueError, KeyError):
+    data = _codex_catalog_file()
+    if not data:
         return []
+    listed = [m for m in data.get("models", []) if m.get("visibility") == "list"]
     listed.sort(key=lambda m: m.get("priority", 999))
     return [{"slug": m["slug"], "name": m.get("display_name") or m["slug"],
              "about": m.get("description", ""),
              "efforts": [lvl["effort"] for lvl in m.get("supported_reasoning_levels", [])]}
             for m in listed]
+
+
+def _clean_login_line(line):
+    return ANSI.sub("", line).strip()
+
+
+def _public_login(session):
+    return {key: session.get(key) for key in
+            ("engine", "running", "complete", "url", "device_code", "needs_code", "error")}
+
+
+def _watch_login(engine, session):
+    proc = session["proc"]
+    try:
+        for raw in proc.stdout:
+            line = _clean_login_line(raw)
+            with session["condition"]:
+                if found := URL.search(line):
+                    session["url"] = found.group(0)
+                if engine == "codex" and (found := DEVICE_CODE.search(line)):
+                    session["device_code"] = found.group(0)
+                session["condition"].notify_all()
+        code = proc.wait()
+        with session["condition"]:
+            session["running"] = False
+            session["complete"] = code == 0
+            if code:
+                session["error"] = "Вход не завершён"
+            session["condition"].notify_all()
+        if code == 0:
+            check_engine(engine)
+    except Exception as exc:
+        with session["condition"]:
+            session["running"] = False
+            session["error"] = str(exc)
+            session["condition"].notify_all()
+
+
+def start_login(engine):
+    """Запустить штатный OAuth CLI и вернуть ссылку/код для браузера администратора."""
+    if engine not in ENGINES:
+        raise ValueError("Неизвестная нейросеть")
+    if not installed(engine):
+        raise ValueError("CLI не установлен на сервере")
+    with _login_lock:
+        old = _login_sessions.get(engine)
+        if old and old["running"]:
+            return _public_login(old)
+        if engine == "claude":
+            args = [CLAUDE_BIN, "auth", "login", "--claudeai"]
+            env = model_env(CLAUDE_CONFIG_DIR=os.path.dirname(HOST_CREDS), BROWSER="/bin/true")
+        else:
+            args = [CODEX_BIN, "login", "--device-auth"]
+            env = model_env(CODEX_HOME=os.path.dirname(CODEX_HOST_AUTH))
+        proc = subprocess.Popen(args, cwd=HERE, env=env, text=True, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
+                                start_new_session=True)
+        session = {"engine": engine, "proc": proc, "running": True, "complete": False,
+                   "url": "", "device_code": "", "needs_code": engine == "claude", "error": "",
+                   "condition": threading.Condition()}
+        _login_sessions[engine] = session
+        threading.Thread(target=_watch_login, args=(engine, session), daemon=True).start()
+    with session["condition"]:
+        session["condition"].wait_for(lambda: (session["url"] and (engine == "claude" or session["device_code"]))
+                                      or session["error"] or not session["running"], timeout=10)
+    return _public_login(session)
+
+
+def login_state(engine):
+    if engine not in ENGINES:
+        raise ValueError("Неизвестная нейросеть")
+    with _login_lock:
+        session = _login_sessions.get(engine)
+    return _public_login(session) if session else {"engine": engine, "running": False,
+                                                     "complete": False, "url": "", "device_code": "",
+                                                     "needs_code": engine == "claude", "error": ""}
+
+
+def submit_login_code(engine, code):
+    if engine != "claude":
+        raise ValueError("Код вводится на странице OpenAI")
+    with _login_lock:
+        session = _login_sessions.get(engine)
+    if not session or not session["running"]:
+        raise ValueError("Сначала запустите вход")
+    code = str(code).strip()
+    if not code or len(code) > 2000:
+        raise ValueError("Пустой или слишком длинный код")
+    session["proc"].stdin.write(code + "\n")
+    session["proc"].stdin.flush()
+    return _public_login(session)
+
+
+def stop_logins():
+    with _login_lock:
+        sessions = list(_login_sessions.values())
+    for session in sessions:
+        if session["running"]:
+            stop(session["proc"])
 
 
 def models():

@@ -2170,7 +2170,7 @@ function showCard() {
   if (cardTab === "access") {
     panel.append(el("p", "muted", "Песочница включена всегда: модель видит только папку этого пользователя."));
     const engines = Object.keys(card.catalog);
-    if (!engines.length) panel.append(el("p", "muted", "В системе нет сетей из NEXUS_ENGINES."));
+    if (!engines.length) panel.append(el("p", "muted", "На сервере нет подключённых нейросетей."));
     for (const engine of engines) {
       const access = settings.access[engine];
       const box = el("fieldset", "engine");
@@ -2207,7 +2207,7 @@ function showCard() {
   if (cardTab === "engines") {
     panel.append(el("p", "muted", "Лимит — доля общего окна подписки на этого пользователя: двое по 50% вместе могут потратить всё. 100% — без лимита. Уровень «авто» доступен, только если отмечены все уровни модели."));
     const engines = Object.entries(card.catalog);
-    if (!engines.length) panel.append(el("p", "muted", "В системе нет сетей из NEXUS_ENGINES."));
+    if (!engines.length) panel.append(el("p", "muted", "На сервере нет подключённых нейросетей."));
     for (const [engine, list] of engines) {
       const conf = settings.engines[engine];
       const box = el("fieldset", "engine");
@@ -2277,17 +2277,101 @@ $("#user-new").onclick = () => {
   setLevel("section");
 };
 
+const ENGINE_STATUS = {
+  available: "Доступна",
+  limited: "Доступна, лимит исчерпан",
+  login: "Нужен вход",
+  missing: "Не установлена",
+  error: "Недоступна",
+  checking: "Проверяется",
+};
+
+async function waitEngineLogin(engine) {
+  for (let attempt = 0; attempt < 450; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    let login;
+    try { login = await api(`/api/engines/${engine}/login`); } catch { return; }
+    if (login.running) continue;
+    if (login.complete) {
+      alert("Вход завершён");
+      await openGeneral();
+      models = await api("/api/models");
+      await refreshMe();
+    } else if (login.error) {
+      alert(login.error);
+      await openGeneral();
+    }
+    return;
+  }
+}
+
+async function loginEngine(engine) {
+  // Окно надо создать прямо в обработчике клика, иначе браузер заблокирует его после await.
+  const authTab = window.open("about:blank", "_blank");
+  let login;
+  try { login = await api(`/api/engines/${engine}/login`, { method: "POST" }); }
+  catch (err) { authTab?.close(); alert(err.message); return; }
+  if (login.url) {
+    if (authTab) authTab.location = login.url;
+    else location.href = login.url;
+  } else authTab?.close();
+  if (login.device_code) {
+    prompt("Введите этот одноразовый код на открывшейся странице:", login.device_code);
+  }
+  if (login.needs_code) {
+    const code = prompt("После входа Claude покажет код. Вставьте его сюда:");
+    if (code) {
+      try { await api(`/api/engines/${engine}/login/code`, { method: "POST", json: { code } }); }
+      catch (err) { alert(err.message); return; }
+    }
+  }
+  waitEngineLogin(engine);
+}
+
+function engineSettings(items) {
+  const section = el("section", "engine-settings");
+  section.append(el("h4", "", "Подключение нейросетей"),
+    el("p", "muted", "Сервис проверяет CLI, вход и пробный ответ при каждом запуске. Исчерпанный лимит не отключает сеть."));
+  for (const item of items) {
+    const row = el("div", `engine-state ${item.state}`);
+    const text = el("div");
+    text.append(el("strong", "", item.name), el("span", "state", ENGINE_STATUS[item.state] || item.state),
+      el("small", "muted", item.message));
+    const actions = el("div", "actions");
+    if (item.login && item.installed) {
+      const login = el("button", "primary", "Авторизоваться");
+      login.type = "button";
+      login.onclick = () => loginEngine(item.engine);
+      actions.append(login);
+    }
+    if (item.installed) {
+      const check = el("button", "", "Проверить");
+      check.type = "button";
+      check.onclick = async () => {
+        check.disabled = true;
+        try { await api(`/api/engines/${item.engine}/check`, { method: "POST" }); await openGeneral(); }
+        catch (err) { alert(err.message); check.disabled = false; }
+      };
+      actions.append(check);
+    }
+    row.append(text, actions);
+    section.append(row);
+  }
+  return section;
+}
+
 // Общие настройки сервиса (data/settings.json). Форма строится по списку с сервера:
 // сколько параметров и как они называются — не важно.
 async function openGeneral() {
-  let list;
-  try { list = await api("/api/settings"); } catch (e) { alert(e.message); return; }
+  let list, engineStates;
+  try { [list, engineStates] = await Promise.all([api("/api/settings"), api("/api/engines")]); }
+  catch (e) { alert(e.message); return; }
   card = null;
   document.querySelectorAll("#users-list button").forEach((b) => b.classList.remove("active"));
   const form = el("form", "general-settings");
   form.append(el("h3", "", "Общие настройки"),
     el("p", "muted", "Хранятся в data/settings.json и применяются сразу, без перезапуска. "
-      + ".env задаёт только значения при первом запуске."));
+      + ".env задаёт только значения при первом запуске."), engineSettings(engineStates));
   const changed = {};
   const rows = [];  // [строка, параметр] — для показа по условию shown_if
   const valueOf = (name) => changed[name] ?? list.find((x) => x.name === name)?.value;

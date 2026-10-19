@@ -663,13 +663,13 @@ class GeneralSettings(unittest.TestCase):
         with self.env(NEXUS_TIMEOUT="600", NEXUS_USAGE_REFRESH="30"):
             settings.load()
         self.assertEqual(settings.get(settings.TIMEOUT.name), 99)  # файл сильнее .env
-        self.assertEqual(settings.get(settings.ENGINES.name), ["claude"])  # старая строка стала списком
         self.assertEqual(settings.get(settings.CLAUDE_MODEL.name), "haiku")  # прежнее имя model перенесено
         self.assertEqual(settings.get(settings.USAGE_REFRESH.name), 30)  # недостающее — из .env
         self.assertEqual(settings.get(settings.COMPACT_MB.name), 10)  # отрицательное — по умолчанию
         stored = self.stored()
         self.assertEqual((stored["usage_refresh"], stored["future"]), (30, True))  # дописан, чужое не теряем
         self.assertNotIn("model", stored)
+        self.assertNotIn("engines", stored)  # прежний ручной список удалён
 
     def test_set_saves_and_notifies(self):
         with self.env():
@@ -704,15 +704,11 @@ class GeneralSettings(unittest.TestCase):
         self.assertEqual(token["title"], "Токен Telegram-бота")  # на экране — русское название
         model = next(p for p in listing if p["name"] == settings.CLAUDE_MODEL.name)
         self.assertEqual([c["value"] for c in model["choices"]], ["opus", "sonnet", "haiku"])
-        self.assertEqual(model["shown_if"], {"name": "engines", "value": "claude"})  # только при отмеченном Claude
+        self.assertIsNone(model["shown_if"])
         self.assertNotIn("Возможные значения", model["about"])
-        engines = next(p for p in listing if p["name"] == settings.ENGINES.name)
-        self.assertEqual((engines["type"], engines["choices"][0]), ("list", {"value": "claude", "label": "Claude"}))
-        for bad in ([], ["gpt"]):  # хоть одна и только известные
-            with self.assertRaises(HTTPException):
-                asyncio.run(app.save_settings({"engines": bad}, admin))
-        result = asyncio.run(app.save_settings({"engines": ["codex"]}, admin))
-        self.assertEqual(next(p for p in result if p["name"] == "engines")["value"], ["codex"])
+        self.assertNotIn("engines", [p["name"] for p in listing])
+        with self.assertRaises(HTTPException):
+            asyncio.run(app.save_settings({"engines": ["codex"]}, admin))
         self.assertEqual(next(p for p in listing if p["name"] == "timeout")["type"], "int")
         with self.assertRaises(HTTPException):  # одно плохое значение — не сохраняется ничего
             asyncio.run(app.save_settings({"stt_lang": "en", "timeout": "x"}, admin))
@@ -1024,15 +1020,44 @@ class Access(unittest.TestCase):
 
 
 class Engines(unittest.TestCase):
-    def test_env_list(self):
-        for raw, expected in ((["claude"], ["claude"]), (["codex", "claude"], ["claude", "codex"]),
-                              ("[codex]", ["codex"]), ("claude, codex", ["claude", "codex"])):
-            settings.set(settings.ENGINES.name, raw)
-            with unittest.mock.patch.object(core, "CODEX_BIN", "/bin/true"):
-                self.assertEqual(core.engines(), expected, raw)
-        settings.set(settings.ENGINES.name, ["claude", "codex"])
-        with unittest.mock.patch.object(core, "CODEX_BIN", None):
-            self.assertEqual(core.engines(), ["claude"])  # codex нет в системе
+    def tearDown(self):
+        core._engine_states.clear()
+
+    def test_checks_install_login_answer_and_limits(self):
+        replies = {("claude", False): (0, "logged in"), ("claude", True): (0, "OK"),
+                   ("codex", False): (0, "Logged in"), ("codex", True): (1, "usage limit exceeded")}
+        with unittest.mock.patch.object(core, "installed", return_value=True), \
+                unittest.mock.patch.object(core, "_run_check", side_effect=lambda engine, probe=False: replies[engine, probe]):
+            core.refresh_engines()
+        self.assertEqual(core.engines(), ["claude", "codex"])
+        states = {item["engine"]: item for item in core.engine_statuses()}
+        self.assertEqual(states["claude"]["state"], "available")
+        self.assertEqual(states["codex"]["state"], "limited")
+
+        with unittest.mock.patch.object(core, "installed", side_effect=lambda engine: engine == "claude"), \
+                unittest.mock.patch.object(core, "_run_check", return_value=(1, "not logged in")):
+            core.refresh_engines()
+        states = {item["engine"]: item for item in core.engine_statuses()}
+        self.assertEqual((states["claude"]["state"], states["claude"]["login"]), ("login", True))
+        self.assertEqual((states["codex"]["state"], states["codex"]["installed"]), ("missing", False))
+        self.assertEqual(core.engines(), [])
+
+    def test_codex_catalog_matches_cli_version(self):
+        folder = os.path.join(core.DATA, "engine", "codex")
+        os.makedirs(folder, exist_ok=True)
+        old = os.path.join(folder, "models_cache.json")
+        new = os.path.join(TMP, "new-models.json")
+        def cache(path, version, slug):
+            with open(path, "w") as f:
+                json.dump({"client_version": version, "models": [{"slug": slug, "visibility": "list",
+                           "supported_reasoning_levels": []}]}, f)
+        cache(old, "0.154.0", "gpt-supported")
+        cache(new, "0.163.0", "gpt-too-new")
+        with unittest.mock.patch.object(core, "MODELS_CACHE", new), \
+                unittest.mock.patch.object(core, "codex_version", return_value="0.154.0"), \
+                unittest.mock.patch.object(core, "installed", return_value=True), \
+                unittest.mock.patch.object(core.glob, "glob", return_value=[]):
+            self.assertEqual([model["slug"] for model in core.codex_models()], ["gpt-supported"])
 
 
 class Permissions(unittest.TestCase):

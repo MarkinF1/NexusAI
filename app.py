@@ -66,11 +66,13 @@ async def lifespan(app):
     with contextlib.suppress(FileNotFoundError):
         os.remove(jobs.DRAIN)
     jobs.save_busy()
+    await asyncio.to_thread(core.refresh_engines)
     poll = asyncio.create_task(usage.poll())
     await restart_bot()
     yield
     await stop_task(poll)
     await stop_task(bot_task)
+    core.stop_logins()
 
 
 # Смена токена приходит из обработчика запроса — он в том же цикле событий.
@@ -764,6 +766,48 @@ async def save_settings(body: dict, user=Depends(admin_user)):
     for name, value in values.items():
         settings.set(name, value)
     return settings.listing()
+
+
+@app.get("/api/engines")
+def engine_statuses(user=Depends(admin_user)):
+    """Все поддерживаемые сети: установка, вход и настоящий пробный ответ."""
+    return core.engine_statuses()
+
+
+@app.post("/api/engines/{engine}/check")
+async def check_engine(engine: str, user=Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(core.check_engine, engine)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/engines/{engine}/login")
+async def engine_login(engine: str, user=Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(core.start_login, engine)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/engines/{engine}/login")
+def engine_login_state(engine: str, user=Depends(admin_user)):
+    try:
+        return core.login_state(engine)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+class EngineCode(BaseModel):
+    code: str
+
+
+@app.post("/api/engines/{engine}/login/code")
+def engine_login_code(engine: str, body: EngineCode, user=Depends(admin_user)):
+    try:
+        return core.submit_login_code(engine, body.code)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.get("/api/skills")
