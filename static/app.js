@@ -491,15 +491,36 @@ async function start() {
 function showEmpty() {
   $("#title").textContent = "";
   const box = el("div", "empty");
-  box.append(el("h2", "", "С кем поговорим?"));
+  box.append(el("p", "empty-eyebrow", "НОВАЯ БЕСЕДА"),
+    el("h2", "", "С кем поговорим?"),
+    el("p", "empty-intro", "Выберите помощника и начните с того, что вам важно."));
   const list = el("div", "empty-engines");
+  const descriptions = {
+    claude: "Обсудить идею, разобраться в сложном или поработать с текстом.",
+    codex: "Написать код, найти решение или поработать над проектом.",
+  };
   for (const engine of me.engines) {
-    const b = el("button");
-    b.append(engineLabel(engine));
-    b.onclick = () => newChat(engine);
+    const b = el("button", "welcome-card");
+    b.type = "button";
+    b.dataset.engine = engine;
+    const mark = el("span", "welcome-mark");
+    mark.append(logo(engine));
+    const body = el("span", "welcome-body");
+    body.append(el("span", "welcome-name", NAME[engine] || engine),
+      el("span", "welcome-about", descriptions[engine] || "Помощник для ваших задач."));
+    const action = el("span", "welcome-action", "Начать беседу");
+    const arrow = el("span", "welcome-arrow", "→");
+    arrow.setAttribute("aria-hidden", "true");
+    action.append(arrow);
+    b.append(mark, body, action);
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await newChat(engine); } finally { b.disabled = false; }
+    };
     list.append(b);
   }
-  box.append(me.engines.length ? list : el("p", "muted", "Нет доступных сетей. Попросите администратора включить их."));
+  box.append(me.engines.length ? list : el("p", "empty-unavailable", "Пока нет подключённых помощников. Попросите администратора проверить подключение."));
+  if (me.engines.length) box.append(el("p", "empty-hint", "Модель можно выбрать внутри беседы."));
   $("#feed").replaceChildren(box);
 }
 
