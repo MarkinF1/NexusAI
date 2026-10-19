@@ -173,7 +173,15 @@ input, textarea {
   flex: 1; margin: 0; font-size: 17px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-#pick:not([hidden]) { display: flex; gap: 8px; min-width: 0; }
+/* Модель и размер сессии — по содержимому, effort занимает всё место между ними. */
+#pick:not([hidden]) {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center; gap: 8px; min-width: 0; flex: 1 1 100%; order: 4;
+  overflow-x: auto;
+}
+#model { grid-column: 1; width: auto; }
+#effort { grid-column: 2; width: 100%; min-width: 0; text-overflow: ellipsis; }
+#pick #chat-size { grid-column: 3; }
 /* Лимиты сети беседы — последней строкой шапки во всю ширину: 5 часов, под ними неделя */
 #chat-size { color: var(--muted); font-size: 12.5px; white-space: nowrap; cursor: default; }
 #limits { order: 9; flex: 1 1 100%; }
@@ -626,7 +634,6 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   #chat header::after { content: ""; order: 3; flex-basis: 100%; }
   #title { order: 1; flex: 1; min-width: 0; font-size: 16px; }
   #export, #files-open, #delete { order: 2; }
-  #pick:not([hidden]), #chat-size { order: 4; }
   #chat header select { min-width: 0; padding: 5px 8px; }
   #feed { padding: 18px 12px 8px; }
   #feed > * { padding-left: 26px; background-position-x: 7px; }
