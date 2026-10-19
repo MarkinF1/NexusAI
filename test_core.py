@@ -1023,6 +1023,15 @@ class Engines(unittest.TestCase):
     def tearDown(self):
         core._engine_states.clear()
 
+    def test_newest_codex_binary_wins_over_configured_old_version(self):
+        old = os.path.join(TMP, "codex-old")
+        new = os.path.join(TMP, "codex-new")
+        for path, version in ((old, "0.154.0"), (new, "0.163.0")):
+            with open(path, "w") as f:
+                f.write(f"#!{sys.executable}\nprint('codex-cli {version}')\n")
+            os.chmod(path, 0o755)
+        self.assertEqual(core.newest_executable("codex", old, (new,)), new)
+
     def test_checks_install_login_answer_and_limits(self):
         replies = {("claude", False): (0, "logged in"), ("claude", True): (0, "OK"),
                    ("codex", False): (0, "Logged in"), ("codex", True): (1, "usage limit exceeded")}

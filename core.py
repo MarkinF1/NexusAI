@@ -27,10 +27,35 @@ HOST_CREDS = os.path.expanduser("~/.claude/.credentials.json")
 CODEX_HOST_AUTH = os.path.expanduser("~/.codex/auth.json")
 # Каталог моделей codex качает сам — оттуда берём список моделей и уровни размышления.
 MODELS_CACHE = os.path.expanduser("~/.codex/models_cache.json")
+
+
+def newest_executable(name, configured=None, discovered=None):
+    """Самая новая установленная CLI; старый путь из .env не должен скрывать новые модели."""
+    if discovered is None:
+        discovered = (shutil.which(name), os.path.expanduser(f"~/.local/bin/{name}"))
+    paths = []
+    for value in (configured, *discovered):
+        if not value:
+            continue
+        path = value if os.path.sep in value else shutil.which(value)
+        if path and os.access(path, os.X_OK) and path not in paths:
+            paths.append(path)
+    versions = []
+    for order, path in enumerate(paths):
+        try:
+            output = subprocess.check_output([path, "--version"], text=True, timeout=10,
+                                             stderr=subprocess.DEVNULL)
+            found = re.search(r"\d+(?:\.\d+)+", output)
+            if found:
+                versions.append((tuple(map(int, found.group().split("."))), -order, path))
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return max(versions, default=((), 0, paths[0] if paths else None))[2]
+
 # У systemd-сервиса PATH урезанный и ~/.local/bin в него не входит — ищем сами.
 CLAUDE_BIN = (os.environ.get("CLAUDE_BIN") or shutil.which("claude")
               or os.path.expanduser("~/.local/bin/claude"))
-CODEX_BIN = os.environ.get("CODEX_BIN") or shutil.which("codex")
+CODEX_BIN = newest_executable("codex", os.environ.get("CODEX_BIN"))
 MODELS = {
     "opus": "для самых сложных задач, глубокого анализа и архитектуры",
     "sonnet": "универсальная модель для повседневной разработки",
