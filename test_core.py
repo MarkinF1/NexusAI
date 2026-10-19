@@ -1400,28 +1400,20 @@ class Accounting(unittest.TestCase):
         self.assertEqual(usage._load(usage.user_path(22))["claude"]["five_hour"]["used"], 1)
 
     def test_refresh(self):
-        """Опрос подписки: проценты обоих окон в общий снимок, ошибка сети снимок не трогает."""
+        """Опрос через CLI: оба окна, без чтения credentials; ошибки сохраняют снимок."""
         self.keep_snapshot()
-        reply = {"claude": {"five_hour": {"utilization": 38.0, "resets_at": "2100-01-01T00:00:00+00:00"},
-                            "seven_day": {"utilization": 55.0, "resets_at": None}},
-                 "codex": {"rate_limit": {
-                     "primary_window": {"used_percent": 7, "limit_window_seconds": 18000, "reset_at": self.R5},
-                     "secondary_window": {"used_percent": 100, "limit_window_seconds": 604800,
-                                          "reset_at": self.RW}}}}
-        creds = {core.HOST_CREDS: {"claudeAiOauth": {"accessToken": "t"}},
-                 core.CODEX_HOST_AUTH: {"tokens": {"access_token": "t", "account_id": "a"}}}
-        seen = []
-
-        def get(url, headers):
-            seen.append(headers["Authorization"])
-            return reply["claude" if "anthropic" in url else "codex"]
-
+        reply = {"rateLimits": {"limitId": "codex",
+                 "primary": {"usedPercent": 7, "windowDurationMins": 300, "resetsAt": self.R5},
+                 "secondary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": self.RW}}}
         load = usage._load
-        with unittest.mock.patch.object(usage, "_get", get), \
-                unittest.mock.patch.object(usage, "_load", lambda p: creds.get(p) or load(p)):
-            self.assertTrue(usage.refresh("claude"))
+        def guarded_load(path):
+            self.assertNotIn(path, (core.HOST_CREDS, core.CODEX_HOST_AUTH))
+            return load(path)
+        usage.store("claude", {"five_hour": (38, 4102444800)})
+        with unittest.mock.patch.object(usage, "_codex_rate_limits", new=unittest.mock.AsyncMock(return_value=reply)), \
+                unittest.mock.patch.object(usage, "_load", guarded_load):
+            self.assertFalse(usage.refresh("claude"))  # только события обычных ответов
             self.assertTrue(usage.refresh("codex"))
-        self.assertEqual(seen, ["Bearer t", "Bearer t"])
         snap = usage.global_snapshot()
         self.assertEqual(usage.subscription(snap, "claude", "five_hour"), (38.0, 4102444800))
         self.assertEqual(usage.subscription(snap, "claude", "seven_day"), (0, 0))  # окно не начато
@@ -1430,11 +1422,54 @@ class Accounting(unittest.TestCase):
         data = users.clean({})
         self.assertIn("вашей части не осталось", usage.over(usage.summary(27, data)["codex"]))
 
-        def fail(url, headers):
-            raise OSError("offline")
-        with unittest.mock.patch.object(usage, "_get", fail):
+        with unittest.mock.patch.object(usage, "_codex_rate_limits", new=unittest.mock.AsyncMock(side_effect=OSError("offline"))):
             self.assertFalse(usage.refresh("codex"))
         self.assertEqual(usage.global_snapshot(), snap)
+
+        reply = {"rateLimits": {"limitId": "other"}, "rateLimitsByLimitId": {"codex": {
+            "primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": self.R5}}}}
+        with unittest.mock.patch.object(usage, "_codex_rate_limits", new=unittest.mock.AsyncMock(return_value=reply)):
+            self.assertEqual(usage.fetch_codex(), {"five_hour": (0, self.R5)})
+        with unittest.mock.patch.object(usage, "_codex_rate_limits", new=unittest.mock.AsyncMock(return_value={})):
+            self.assertFalse(usage.refresh("codex"))
+
+    def test_codex_limits_protocol_and_cleanup(self):
+        fake = os.path.join(TMP, "fake-limits-cli")
+        with open(fake, "w") as f:
+            f.write(f'''#!{sys.executable}
+import json, os, sys, time
+assert sys.argv[1:] == ["app-server"]
+assert json.loads(input())["method"] == "initialize"
+print(json.dumps({{"id": 0, "result": {{}}}}), flush=True)
+assert json.loads(input())["method"] == "initialized"
+assert json.loads(input())["method"] == "account/rateLimits/read"
+mode = os.environ.get("FAKE_LIMITS_MODE", "ok")
+if mode == "timeout":
+    time.sleep(60)
+if mode == "eof":
+    sys.exit(1)
+print(json.dumps({{"method": "account/updated", "params": {{}}}}), flush=True)
+print(json.dumps({{"id": 1, "error": {{"message": "private output"}}}} if mode == "error" else
+                 {{"id": 1, "result": {{"rateLimits": {{"limitId": "codex"}}}}}}), flush=True)
+time.sleep(60)
+''')
+        os.chmod(fake, 0o755)
+        with unittest.mock.patch.object(core, "CODEX_BIN", fake), \
+                unittest.mock.patch.object(core, "codex_service_home", return_value=TMP), \
+                unittest.mock.patch.object(core, "stop", wraps=core.stop) as stop:
+            self.assertEqual(asyncio.run(usage._codex_rate_limits()), {"rateLimits": {"limitId": "codex"}})
+            for mode, error in (("error", RuntimeError), ("eof", RuntimeError), ("timeout", TimeoutError)):
+                with unittest.mock.patch.dict(os.environ, FAKE_LIMITS_MODE=mode):
+                    with self.assertRaises(error) as raised:
+                        asyncio.run(usage._codex_rate_limits(timeout=.5))
+                    self.assertNotIn("private output", str(raised.exception))
+            for call in stop.call_args_list:
+                self.assertIsNotNone(call.args[0].returncode)
+
+    def test_credential_freshness_uses_only_metadata(self):
+        with unittest.mock.patch("builtins.open", side_effect=AssertionError("credentials read")), \
+                unittest.mock.patch.object(core.os.path, "getmtime", return_value=123):
+            self.assertEqual(core.creds_freshness("credentials"), 123)
 
     def test_base_at_start(self):
         """Опрос посреди запуска не уменьшает его расход: база — снимок на старте."""

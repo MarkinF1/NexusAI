@@ -12,8 +12,6 @@ import json
 import logging
 import os
 import time
-import urllib.request
-from datetime import datetime
 
 import core
 import settings
@@ -48,46 +46,71 @@ def user_path(uid):
     return os.path.join(core.user_dir(uid), "usage.json")
 
 
-# Свежая занятость подписки: те же адреса, что у /usage в claude и /status в codex.
-# Как часто — настройка usage_refresh. Так видно и расход мимо сайта (свой CLI, другие программы), а не только снимок
-# последнего запуска на сайте.
-CLAUDE_URL = "https://api.anthropic.com/api/oauth/usage"
-CODEX_URL = "https://chatgpt.com/backend-api/wham/usage"
-CODEX_WINDOWS = {18000: "five_hour", 604800: "seven_day"}
+# Учётные данные читает только CLI. Для Claude используем rate_limit_event обычных
+# ответов (core.claude_limits), отдельные запросы к модели ради опроса не запускаем.
+CODEX_WINDOWS = {300: "five_hour", 10080: "seven_day"}
 
 
-def _get(url, headers):
-    request = urllib.request.Request(url, headers={"User-Agent": "nexus-ai", **headers})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.load(response)
+async def _codex_rate_limits(timeout=20):
+    """Официальный app-server: только initialize и чтение лимитов, без запуска модели."""
+    if not core.installed("codex"):
+        return {}
+    proc = await asyncio.create_subprocess_exec(
+        core.CODEX_BIN, "app-server", stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=core.HERE, env=core.model_env(CODEX_HOME=core.codex_service_home()),
+        start_new_session=True, limit=core.LINE_LIMIT)
 
+    async def request(message):
+        proc.stdin.write((json.dumps(message) + "\n").encode())
+        await proc.stdin.drain()
 
-def _stamp(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0
+    async def response(expected):
+        while line := await proc.stdout.readline():
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") != expected:
+                continue
+            if msg.get("error"):
+                # Не переносим произвольный вывод CLI в логи сайта.
+                raise RuntimeError("Codex не смог прочитать лимиты через app-server")
+            return msg.get("result") or {}
+        raise RuntimeError("Codex завершился до получения лимитов")
 
+    async def read():
+        await request({"id": 0, "method": "initialize", "params": {
+            "clientInfo": {"name": "nexus", "version": "1"}}})
+        await response(0)
+        await request({"method": "initialized"})
+        await request({"id": 1, "method": "account/rateLimits/read"})
+        return await response(1)
 
-def fetch_claude():
-    """{окно: (процент, сброс)}. Токен берём общий, обновляет его сам CLI.
-    ponytail: если сайт долго не запускал claude и токен истёк, опрос молчит до запуска."""
-    token = _load(core.HOST_CREDS)["claudeAiOauth"]["accessToken"]
-    data = _get(CLAUDE_URL, {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
-    return {window: (float(w["utilization"]), _stamp(w.get("resets_at")))
-            for window in core.WINDOWS if (w := data.get(window) or {}).get("utilization") is not None}
+    try:
+        return await asyncio.wait_for(read(), timeout)
+    finally:
+        core.stop(proc)
+        await proc.wait()
+        proc.stdin.close()
 
 
 def fetch_codex():
-    tokens = _load(core.CODEX_HOST_AUTH)["tokens"]
-    data = _get(CODEX_URL, {"Authorization": f"Bearer {tokens['access_token']}",
-                            "ChatGPT-Account-Id": tokens.get("account_id", "")})
+    data = asyncio.run(_codex_rate_limits())
+    by_id = data.get("rateLimitsByLimitId") or {}
+    limits = by_id.get("codex") or data.get("rateLimits") or {}
+    if limits.get("limitId") not in (None, "codex"):
+        return {}
     found = {}
-    for w in ((data.get("rate_limit") or {}).get(k) for k in ("primary_window", "secondary_window")):
-        window = CODEX_WINDOWS.get((w or {}).get("limit_window_seconds"))
-        if window:
-            found[window] = (float(w["used_percent"]), w.get("reset_at") or 0)
+    for key in ("primary", "secondary"):
+        value = limits.get(key) or {}
+        window = CODEX_WINDOWS.get(value.get("windowDurationMins"))
+        if window and value.get("usedPercent") is not None:
+            found[window] = (float(value["usedPercent"]), value.get("resetsAt") or 0)
     return found
 
 
-FETCH = {"claude": fetch_claude, "codex": fetch_codex}
+FETCH = {"codex": fetch_codex}
 failing = set()
 
 
@@ -100,9 +123,12 @@ def store(engine, found):
 
 
 def refresh(engine):
-    """Обновить общий снимок с сервера подписки; False — не получилось."""
+    """Обновить снимок через CLI; False — нет новых данных или опрос не поддерживается."""
+    fetch = FETCH.get(engine)
+    if fetch is None:
+        return False
     try:
-        found = FETCH[engine]()
+        found = fetch()
     except Exception as e:
         if engine not in failing:  # одна запись на полосу неудач, а не каждые две минуты
             log.warning("usage %s: %s", engine, e)
@@ -111,7 +137,7 @@ def refresh(engine):
     failing.discard(engine)
     if found:
         store(engine, found)
-    return True
+    return bool(found)
 
 
 async def poll():
@@ -120,7 +146,8 @@ async def poll():
         every = settings.get(settings.USAGE_REFRESH.name)
         if every > 0:
             for engine in core.engines():
-                await asyncio.to_thread(refresh, engine)
+                if engine in FETCH:
+                    await asyncio.to_thread(refresh, engine)
         await asyncio.sleep(every or 60)
 
 

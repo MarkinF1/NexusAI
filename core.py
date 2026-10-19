@@ -87,16 +87,11 @@ CHAT_ID = re.compile(r"[0-9a-f]{32}")
 # --- Папки пользователя ---
 
 def creds_freshness(path):
-    """Чем больше, тем свежее: срок токена claude, иначе время записи файла."""
+    """Время записи файла, без чтения содержимого учётных данных."""
     try:
-        with open(path) as f:
-            expires = (json.load(f).get("claudeAiOauth") or {}).get("expiresAt") or 0
-    except (OSError, ValueError, AttributeError):
-        expires = 0
-    try:
-        return expires, os.path.getmtime(path)
+        return os.path.getmtime(path)
     except OSError:
-        return expires, 0
+        return 0
 
 
 def link_creds(link, host):
