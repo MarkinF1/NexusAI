@@ -456,6 +456,19 @@ $("#passwd").onclick = async () => {
   } catch (err) { alert(err.message); }
 };
 
+// Ярлык iPhone запускает корневой адрес; последнюю беседу храним отдельно для каждого аккаунта.
+function lastChat(id) {
+  const key = `nexus:last-chat:${me.id}`;
+  try {
+    if (!arguments.length) return localStorage.getItem(key) || "";
+    if (id) localStorage.setItem(key, id);
+    else localStorage.removeItem(key);
+  } catch {
+    // Запрет хранилища в браузере не должен мешать открывать беседы.
+  }
+  return "";
+}
+
 async function start() {
   $("#login").hidden = true;
   $("#main").hidden = false;
@@ -465,10 +478,13 @@ async function start() {
   models = await api("/api/models");
   showMe();
   showTg();
-  await loadChats();
-  const id = location.hash.slice(1);
-  if (id) openChat(id);
-  else showEmpty();
+  const chats = await loadChats();
+  const saved = lastChat();
+  const remembered = chats.some((chat) => chat.id === saved) ? saved : "";
+  if (saved && !remembered) lastChat("");
+  const id = location.hash.slice(1) || remembered;
+  if (id && await openChat(id)) return;
+  showEmpty();
 }
 
 // Пустой экран сразу предлагает начать беседу с одной из доступных сетей.
@@ -670,6 +686,7 @@ async function loadChats() {
     a.onclick = (e) => { e.preventDefault(); openChat(c.id); };
     return a;
   }));
+  return list;
 }
 
 // «+» у заголовка «Чаты»: выпадающий список доступных пользователю сетей.
@@ -703,6 +720,7 @@ async function openChat(id, found) {
   try { data = await api(`/api/chats/${id}`); } catch (err) { alert(err.message); return; }
   current = data.chat;
   history.replaceState(null, "", "#" + id);
+  lastChat(id);
   side(false);
   $("#feed").replaceChildren();
   feedGen++;
@@ -733,6 +751,7 @@ async function openChat(id, found) {
   showSize();
   loadChats();
   scrollDown(true);
+  return true;
 }
 
 function showHeader() {
@@ -802,6 +821,7 @@ $("#delete-chat").onclose = async () => {
   if ($("#delete-chat").returnValue !== "ok") return;
   try {
     await api(`/api/chats/${current.id}?files=${$("#delete-files").checked}`, { method: "DELETE" });
+    lastChat("");
     location.hash = "";
     location.reload();
   } catch (err) { alert(err.message); }
