@@ -586,7 +586,10 @@ function showLimits() {
   if (diskFull) warnings.push("Память закончилась: новые файлы загрузить не получится.");
   $("#limits").replaceChildren(...(windows ? Object.keys(WINDOW).map((w) => {
     const x = windows[w];
-    const row = meter(WINDOW[w], x.share, 100, percent(x.share));
+    const reset = x.resets_at ? new Date(x.resets_at * 1000).toLocaleString("ru", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+    }) : "неизвестен";
+    const row = meter(`${WINDOW[w]} · сброс ${reset}`, x.share, 100, percent(x.share));
     row.title = `${shareText(x)} Сброс ${when(x.resets_at)}`;
     return row;
   }) : []));
