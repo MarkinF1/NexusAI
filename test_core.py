@@ -224,14 +224,14 @@ class Library(unittest.TestCase):
         self.put(cwd, "for_user", "done.txt")
         core.finish(33, meta["id"], True)
         self.put(cwd, "from_user", "pending.txt")  # ответа на него ещё не было
-        app.delete_chat(meta["id"], False, owner)
+        asyncio.run(app.delete_chat(meta["id"], False, owner))
         self.assertEqual(sorted(os.listdir(lib)), ["done.txt", "pending.txt"])
         self.assertFalse(os.path.exists(cwd))
         self.assertFalse(os.path.exists(core.chat_file(33, meta["id"], ".links.json")))
         other = core.create_chat(33, "claude", "sonnet")
         self.put(core.workspace(33, other["id"]), "for_user", "gone.txt")
         core.finish(33, other["id"], True)
-        app.delete_chat(other["id"], True, owner)
+        asyncio.run(app.delete_chat(other["id"], True, owner))
         self.assertEqual(sorted(os.listdir(lib)), ["done.txt", "pending.txt"])
 
     def test_library_api(self):

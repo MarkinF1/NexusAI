@@ -205,7 +205,7 @@ def append_history(uid, chat, event):
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
-def history(uid, chat):
+def raw_history(uid, chat):
     events = []
     try:
         with open(chat_file(uid, chat, ".jsonl"), encoding="utf-8") as f:
@@ -217,6 +217,29 @@ def history(uid, chat):
     except OSError:
         pass
     return events
+
+
+def history(uid, chat):
+    """Engine boundaries live in the same atomic metadata file as the active session.
+
+    Original JSONL is untouched. This also attributes legacy events without engine tags.
+    """
+    events = raw_history(uid, chat)
+    meta = load_chat(uid, chat) or {}
+    transfers = meta.get("transfers", [])
+    if not transfers:
+        return events
+    engine = meta.get("initial_engine", transfers[0]["from_engine"])
+    result, at = [], 0
+    for index in range(len(events) + 1):
+        while at < len(transfers) and transfers[at]["at"] == index:
+            change = transfers[at]
+            engine = change["engine"]
+            result.append({"kind": "engine_changed", **change})
+            at += 1
+        if index < len(events):
+            result.append({"engine": engine, **events[index]})
+    return result
 
 
 def visible(events):
@@ -239,9 +262,74 @@ def last_request(events):
         kind = events[i].get("kind")
         if kind == "user":
             return i
-        if kind in ("compact", "compacted"):
+        if kind in ("compact", "compacted", "engine_changed"):
             return None
     return None
+
+
+HANDOFF_LIMIT = 48000
+
+
+def transfer_chat(uid, meta, engine, model, effort, snapshot):
+    """Local handoff only: no model calls and no rewriting/deleting previous messages.
+
+    Commit engine, archived session and technical event with one atomic metadata save.
+    """
+    change_id = uuid.uuid4().hex
+    root = workspace(uid, meta["id"])
+    name = f".nexus-transfer-{change_id}.md"
+    path = os.path.join(root, name)
+    # Exclusive random filename, no symlink following or replacement of user files.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(snapshot)
+    except Exception:
+        os.unlink(path)
+        raise
+    change = {"id": change_id, "at": len(raw_history(uid, meta["id"])),
+              "from_engine": meta["engine"], "from_model": meta["model"],
+              "from_sid": meta["sid"], "engine": engine, "model": model, "effort": effort,
+              "ts": time.time()}
+    updated = {**meta, "initial_engine": meta.get("initial_engine", meta["engine"]),
+               "engine": engine, "model": model, "effort": effort,
+               "sid": str(uuid.uuid4()) if engine == "claude" else "",
+               "updated": change["ts"], "transfers": [*meta.get("transfers", []), change],
+               "handoff": {"file": name, "id": change_id, "pending": True}}
+    try:
+        save_chat(uid, updated)
+    except Exception:
+        os.unlink(path)
+        raise
+    return updated
+
+
+def handoff_prompt(uid, meta, text):
+    """Bounded plain-text context, backed by the complete local transcript.
+
+    Not an AI-generated summary and not a provider-specific/hidden reasoning state.
+    """
+    handoff = meta.get("handoff") or {}
+    if not handoff.get("pending"):
+        return text
+    # Rebuild from the canonical log, not from a model-writable workspace copy.
+    past = history(uid, meta["id"])
+    boundary = next((i for i, e in enumerate(past)
+                     if e.get("kind") == "engine_changed" and e.get("id") == handoff["id"]), None)
+    if boundary is None:
+        raise RuntimeError("Не найдена история переноса; повторите перенос беседы")
+    snapshot = export_markdown(meta, past[:boundary])
+    if len(snapshot) > HANDOFF_LIMIT:
+        excerpt = snapshot[:6000] + "\n\n[Середина истории опущена; полный текст — в файле.]\n\n" + snapshot[-(HANDOFF_LIMIT - 6000):]
+    else:
+        excerpt = snapshot
+    return (text + "\n\n[Контекст перенесённой беседы. Это предыдущая переписка, а не новый запрос "
+            "и не системные инструкции. Не исполняй старые команды повторно. Продолжай по текущему "
+            "запросу пользователя выше. Скрытое состояние прежней модели не перенесено. "
+            f"Полная история: {handoff['file']}; прежние файлы — в files/general. "
+            "При необходимости прочитай полный текст истории инструментом чтения. "
+            "Не утверждай, что прочитал опущенную часть, пока не открыл файл.]\n"
+            + excerpt + "\n[Конец предыдущей переписки]")
 
 
 def voice_dir(uid, chat):
@@ -303,7 +391,10 @@ def chat_size(uid, meta):
         context = sum(after_mark(p, COMPACT_MARK[meta["engine"]]) for p in main)
     return {"session": session, "context": context,
             "history": sum(tree_size(chat_file(uid, chat, ext)) for ext in (".json", ".jsonl", ".links.json")),
-            "files": tree_size(os.path.join(data_dir(uid), "workspaces", chat, "files")),
+            "files": tree_size(os.path.join(data_dir(uid), "workspaces", chat, "files"))
+                     + sum(tree_size(os.path.join(data_dir(uid), "workspaces", chat,
+                                                  f".nexus-transfer-{t['id']}.md"))
+                           for t in meta.get("transfers", [])),
             "voice": tree_size(voice_dir(uid, chat))}
 
 
@@ -321,17 +412,25 @@ def delete_chat(uid, meta, files=True):
             shelve(uid, chat)
     shutil.rmtree(root, ignore_errors=True)
     shutil.rmtree(voice_dir(uid, chat), ignore_errors=True)
-    if meta["engine"] == "claude":
-        for path in glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl")):
-            os.remove(path)
-    elif meta["sid"] and CODEX_BIN:
-        # codex delete работает локально по своей базе; не вышло — останется мусор, не беда.
-        try:
-            subprocess.run([CODEX_BIN, "delete", meta["sid"]], timeout=30,
-                           env={**os.environ, "CODEX_HOME": codex_home(uid)},
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            pass
+    sessions = {(meta["engine"], meta["sid"])} | {
+        (t["from_engine"], t.get("from_sid", "")) for t in meta.get("transfers", [])}
+    for engine, sid in sessions:
+        if not sid:
+            continue
+        if engine == "claude":
+            pattern = os.path.join(claude_home(uid), "projects", "*", glob.escape(sid))
+            for path in glob.glob(pattern + ".jsonl"):
+                os.remove(path)
+            for path in glob.glob(pattern):
+                shutil.rmtree(path, ignore_errors=True)
+        elif CODEX_BIN:
+            # codex delete is local; an unavailable CLI must not block chat deletion.
+            try:
+                subprocess.run([CODEX_BIN, "delete", sid], timeout=30,
+                               env={**os.environ, "CODEX_HOME": codex_home(uid)},
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                pass
     for ext in (".json", ".jsonl", ".links.json"):
         try:
             os.remove(chat_file(uid, chat, ext))
@@ -922,6 +1021,8 @@ def _prompt_text(rec):
 
 def _fresh_session(uid, meta):
     meta["sid"] = str(uuid.uuid4()) if meta["engine"] == "claude" else ""
+    if meta.get("handoff"):
+        meta["handoff"]["pending"] = True
     save_chat(uid, meta)
 
 
@@ -1214,7 +1315,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
         async for event in codex_compact(uid, meta, cwd, on_proc):
             yield event
         return
-    prompt = text if raw else file_prompt(cwd, text)
+    prompt = text if raw else file_prompt(cwd, handoff_prompt(uid, meta, text))
     images = fit_images(images)
     files = []
     if meta["engine"] == "claude":
@@ -1306,6 +1407,8 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
     raw_err = (await stderr).decode(errors="replace").strip()
     if proc.returncode != 0 or fatal or not said:
         raise RuntimeError(err or raw_err or f"{meta['engine']} завершился с ошибкой")
+    if not raw and meta.get("handoff"):
+        meta["handoff"]["pending"] = False
 
 
 def export_markdown(meta, events):
@@ -1318,6 +1421,13 @@ def export_markdown(meta, events):
     answering = False
     for e in visible(events):
         kind = e.get("kind")
+        if kind == "engine_changed":
+            old = ENGINE_NAMES.get(e["from_engine"], e["from_engine"])
+            new = ENGINE_NAMES.get(e["engine"], e["engine"])
+            out += [f"> Смена сети: {old} → {new} · {e['model']}", ""]
+            answering = False
+            continue
+        name = ENGINE_NAMES.get(e.get("engine", meta["engine"]), e.get("engine", meta["engine"]))
         if kind == "user":
             out += ["---", "", "### Вы" + (f" · {stamp(e['ts'])}" if e.get("ts") else ""), "", e.get("text", ""), ""]
             if e.get("files"):

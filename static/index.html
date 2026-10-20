@@ -91,8 +91,8 @@
         <select id="effort" aria-label="Уровень размышления"></select>
         <span id="chat-size" hidden></span>
       </div>
-      <button id="export" class="icon" aria-label="Беседа файлом Markdown" title="Беседа файлом Markdown" hidden><svg width="20" height="20"><use href="#i-download"/></svg></button>
       <button id="files-open" class="icon" aria-label="Файлы беседы" title="Файлы беседы" hidden><svg width="20" height="20"><use href="#i-folder"/></svg></button>
+      <button id="chat-settings-open" class="icon" aria-label="Настройки беседы" title="Настройки беседы" aria-haspopup="dialog" aria-controls="chat-settings" hidden><svg width="20" height="20"><use href="#i-gear"/></svg></button>
       <button id="delete" class="icon" aria-label="Удалить беседу" title="Удалить беседу" hidden><svg width="20" height="20"><use href="#i-trash"/></svg></button>
       <div id="limits" aria-label="Лимиты подписки"></div>
     </header>
@@ -149,6 +149,31 @@
     </div>
     <div id="card"><p class="muted">Выберите участника слева.</p></div>
   </div>
+</dialog>
+
+<dialog id="chat-settings" aria-labelledby="chat-settings-title">
+  <div class="dialog-bar">
+    <h3 id="chat-settings-title">Настройки беседы</h3>
+    <form method="dialog"><button class="icon" aria-label="Закрыть"><svg width="20" height="20"><use href="#i-close"/></svg></button></form>
+  </div>
+  <div class="chat-settings-content">
+    <p id="chat-settings-name"></p>
+    <section class="chat-transfer">
+      <label for="chat-transfer-target">Перенести на другую нейросеть</label>
+      <select id="chat-transfer-target" disabled aria-describedby="chat-transfer-status"><option value="">Проверяем доступные сети…</option></select>
+      <p id="chat-transfer-status" class="muted" role="status" aria-live="polite"></p>
+    </section>
+    <p class="muted">Скачайте историю беседы в формате Markdown (.md).</p>
+    <button id="export" type="button" class="primary"><svg width="18" height="18"><use href="#i-download"/></svg>Скачать</button>
+  </div>
+</dialog>
+
+<dialog id="chat-transfer-confirm" aria-labelledby="chat-transfer-title">
+  <h3 id="chat-transfer-title">Перенести беседу?</h3>
+  <p id="chat-transfer-description"></p>
+  <p class="muted">История и файлы останутся. Новая сеть получит сохранённую переписку при следующем сообщении. Длинная история передаётся частично, полный текст доступен ей в файле. Скрытый контекст модели не переносится.</p>
+  <p class="muted">Ответ от прежней сети не нужен — перенос работает и при исчерпанном лимите. Лимиты новой сети действуют как обычно.</p>
+  <form method="dialog"><button value="ok" class="primary">Перенести</button><button value="">Отмена</button></form>
 </dialog>
 
 <dialog id="delete-chat">

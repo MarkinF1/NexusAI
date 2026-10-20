@@ -750,6 +750,8 @@ async function openChat(id, found) {
   feedGen++;
   count = 0;
   turn = [];
+  renderEngine = current.initial_engine || current.engine;
+  turnEngine = renderEngine;
   lastAsk = null;
   stopEdit(true);
   data.history.forEach(render);
@@ -795,7 +797,7 @@ function showHeader() {
   effort.replaceChildren(el("option", "", "размышление: авто"), ...levels.map((l) => el("option", "", l)));
   effort.options[0].value = "";
   effort.value = current.effort;
-  for (const id of ["#pick", "#export", "#files-open", "#delete"]) $(id).hidden = false;
+  for (const id of ["#pick", "#files-open", "#chat-settings-open", "#delete"]) $(id).hidden = false;
   effort.hidden = !levels.length;
   showLimits();
   // Модель беседы из Telegram меняют в боте, пока её не перенесли.
@@ -960,17 +962,20 @@ function endTurn() {
   if (!turn.length) return;
   const text = turn.join("\n\n");
   turn = [];
-  $("#feed").insertBefore(copyBar(text), $("#feed > .thinking"));
+  const bar = copyBar(text);
+  bar.dataset.engine = turnEngine;
+  $("#feed").insertBefore(bar, $("#feed > .thinking"));
 }
 
 // Подряд идущие команды модели — одна группа: видна последняя строкой, «Ещё N»
 // раскрывает весь список, и в раскрытом виде каждая команда показана целиком.
-function toolLine(ev) {
+function toolLine(ev, engine) {
   const feed = $("#feed");
   const thinking = $("#feed > .thinking");
   let group = thinking ? thinking.previousElementSibling : feed.lastElementChild;
-  if (!group?.classList.contains("msg-tools")) {
+  if (!group?.classList.contains("msg-tools") || group.dataset.engine !== engine) {
     group = el("div", "msg-tools");
+    group.dataset.engine = engine;
     const more = el("button", "tools-more");
     more.type = "button";
     more.onclick = () => toggleTools(group);
@@ -1001,9 +1006,11 @@ function toolsLabel(group) {
 
 // Последний запрос беседы: его можно повторить или изменить, пока после него не было сжатия.
 let lastAsk = null;
+let renderEngine = null, turnEngine = null;
 
 function render(ev) {
   const feed = $("#feed");
+  const engine = ev.engine || renderEngine || current.engine;
   let node, after;
   if (ev.kind === "retry") {
     // Повтор: последний запрос и всё после него уходят из ленты, следом придёт новый.
@@ -1017,8 +1024,15 @@ function render(ev) {
     lastAsk = null;
     return;
   }
-  if (ev.kind === "user") {
+  if (ev.kind === "engine_changed") {
     endTurn();
+    lastAsk = null;
+    renderEngine = engine;
+    turnEngine = engine;
+    node = el("div", "msg-note msg-engine-change", `Сеть изменена: ${NAME[ev.from_engine] || ev.from_engine} → ${NAME[engine] || engine} · ${ev.model}`);
+  } else if (ev.kind === "user") {
+    endTurn();
+    turnEngine = engine;
     node = el("div", "msg-user", ev.text);
     if (ev.files?.length) {
       const chips = el("div", "chips");
@@ -1028,11 +1042,12 @@ function render(ev) {
     if (ev.text) after = copyBar(ev.text);
     lastAsk = { text: ev.text, bar: after };
   } else if (ev.kind === "text") {
+    turnEngine = engine;
     turn.push(ev.text);
     node = el("div", "msg-text");
     node.innerHTML = DOMPurify.sanitize(marked.parse(ev.text));
   } else if (ev.kind === "tool") {
-    toolLine(ev);
+    toolLine(ev, engine);
   } else if (ev.kind === "warning") {
     node = el("div", "msg-error", ev.text);
   } else if (ev.kind === "error") {
@@ -1045,7 +1060,7 @@ function render(ev) {
     node = el("div", "msg-note", "Сжатие беседы…");
   } else if (ev.kind === "compacted") {
     const was = ev.tokens ? `: было ≈${Math.round(ev.tokens / 1000).toLocaleString("ru")} тыс. токенов` : "";
-    node = el("div", "msg-note", (ev.auto ? `${NAME[current.engine]} сам сжал беседу` : "Беседа сжата") + was);
+    node = el("div", "msg-note", (ev.auto ? `${NAME[engine]} сам сжал беседу` : "Беседа сжата") + was);
   } else if (ev.kind === "stopped") {
     node = el("div", "msg-note", "Остановлено");
   } else if (ev.kind === "voice") {
@@ -1063,8 +1078,8 @@ function render(ev) {
     node = el("div", "chips");
     ev.files.forEach((p) => node.append(fileLink(p)));
   }
-  if (node) feed.insertBefore(node, $("#feed > .thinking"));
-  if (after) feed.insertBefore(after, $("#feed > .thinking"));
+  if (node) { node.dataset.engine = engine; feed.insertBefore(node, $("#feed > .thinking")); }
+  if (after) { after.dataset.engine = engine; feed.insertBefore(after, $("#feed > .thinking")); }
   if (ev.kind === "done") endTurn();
 }
 
@@ -1182,7 +1197,9 @@ function follow() {
   const chat = current.id;
   stream = new EventSource(`/api/chats/${chat}/events?start=${count}`);
   stream.onmessage = (e) => {
-    render(JSON.parse(e.data));
+    const ev = JSON.parse(e.data);
+    if (ev.kind === "engine_changed") { stream.close(); stream = null; openChat(chat); return; }
+    render(ev);
     count++;
     scrollDown();
   };
@@ -1837,10 +1854,91 @@ const chatFiles = fileBrowser("files", {
   changed: () => showSize(),
 });
 
+// --- Настройки отдельной беседы ---
+let transferLoad = 0, transferChoice = null;
+async function loadTransferOptions(chatId) {
+  const generation = ++transferLoad;
+  const dialog = $("#chat-settings"), select = $("#chat-transfer-target"), status = $("#chat-transfer-status");
+  select.replaceChildren(el("option", "", "Проверяем доступные сети…"));
+  select.disabled = true;
+  status.textContent = "";
+  try {
+    const data = await api(`/api/chats/${chatId}/transfer`);
+    if (generation !== transferLoad || dialog.dataset.chatId !== chatId) return;
+    dialog.dataset.fromEngine = data.engine;
+    dialog.dataset.revision = data.updated;
+    const placeholder = el("option", "", "Выберите нейросеть");
+    placeholder.value = "";
+    select.replaceChildren(placeholder);
+    for (const target of data.targets) {
+      const option = el("option", "", `${target.name} · ${target.model}`);
+      option.value = target.engine;
+      select.append(option);
+    }
+    select.value = "";
+    select.disabled = !!data.blocked || !data.targets.length;
+    status.textContent = data.blocked || (data.targets.length
+      ? "Перенос сохранит историю и файлы. После выбора потребуется подтверждение."
+      : "Перенос на другую модель невозможен: нет доступных моделей других нейросетей.");
+  } catch (err) {
+    if (generation === transferLoad && dialog.dataset.chatId === chatId) status.textContent = err.message;
+  }
+}
+
+$("#chat-settings-open").onclick = () => {
+  if (!current) return;
+  const dialog = $("#chat-settings");
+  dialog.dataset.chatId = current.id;
+  dialog.dataset.chatTitle = current.title || "Беседа";
+  $("#chat-settings-name").textContent = current.title || "Новая беседа";
+  dialog.showModal();
+  return loadTransferOptions(current.id);
+};
+
+$("#chat-transfer-target").onchange = () => {
+  const select = $("#chat-transfer-target"), dialog = $("#chat-settings");
+  if (!select.value || select.disabled) return;
+  transferChoice = { chatId: dialog.dataset.chatId, engine: select.value,
+    from_engine: dialog.dataset.fromEngine, revision: Number(dialog.dataset.revision) };
+  $("#chat-transfer-description").textContent = `«${dialog.dataset.chatTitle}»: ${NAME[transferChoice.from_engine]} → ${NAME[transferChoice.engine]}. Продолжить?`;
+  const confirmation = $("#chat-transfer-confirm");
+  confirmation.returnValue = "";
+  confirmation.showModal();
+};
+
+$("#chat-transfer-confirm").onclose = async () => {
+  const choice = transferChoice;
+  transferChoice = null;
+  $("#chat-transfer-target").value = "";
+  if (!choice || $("#chat-transfer-confirm").returnValue !== "ok") return;
+  const dialog = $("#chat-settings"), status = $("#chat-transfer-status");
+  $("#chat-transfer-target").disabled = true;
+  status.textContent = "Переносим беседу…";
+  try {
+    const {chatId, ...body} = choice;
+    await api(`/api/chats/${chatId}/transfer`, {method: "POST", json: body});
+    if (dialog.dataset.chatId === chatId) dialog.close();
+    // The operation succeeded even if a later UI refresh fails.
+    models = await api("/api/models");
+    if (current?.id === chatId) await openChat(chatId);
+    await loadChats();
+    await refreshMe();
+  } catch (err) {
+    if (dialog.dataset.chatId === choice.chatId && dialog.open) {
+      await loadTransferOptions(choice.chatId);
+      status.textContent = err.message;
+    } else alert(err.message);
+  }
+};
+
 $("#export").onclick = () => {
+  const dialog = $("#chat-settings");
+  const chatId = dialog.dataset.chatId;
+  if (!chatId) return;
   // Имя — как у сервера: название беседы без недопустимых в именах файлов знаков.
-  const name = (current.title || "Беседа").replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
-  viewFile({ name: name + ".md", url: `/api/chats/${current.id}/export` });
+  const name = dialog.dataset.chatTitle.replace(/[\\/:*?"<>|\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Беседа";
+  dialog.close();
+  return saveFile(`/api/chats/${chatId}/export`, name + ".md");
 };
 
 $("#files-open").onclick = async () => {

@@ -83,6 +83,38 @@ def new_chat(uid, engine, **extra):
     return core.save_chat(uid, {**meta, **extra}) if extra else meta
 
 
+def transfer_targets(uid, meta):
+    avail = users.available(users.settings(uid))
+    targets = []
+    for engine, models in avail.items():
+        if engine == meta["engine"] or not models:
+            continue
+        wanted = settings.get(settings.DEFAULT_MODEL[engine].name)
+        model = next((m["slug"] for m in models if m["slug"] == wanted), models[0]["slug"])
+        targets.append({"engine": engine, "name": core.ENGINE_NAMES[engine], "model": model,
+                        "effort": default_effort(avail, engine, model)})
+    return targets
+
+
+def transfer(uid, meta, engine, previous_engine, revision):
+    """Must be called without await from the request's event loop, like start's reservation."""
+    if draining():
+        raise Refused(503, UPDATING)
+    if (uid, meta["id"]) in jobs or transcribing[(uid, meta["id"])]:
+        raise Refused(409, "Дождитесь окончания ответа или расшифровки")
+    if in_tg(meta):
+        raise Refused(409, "Сначала перенесите беседу из Telegram на сайт")
+    if meta["engine"] != previous_engine or meta["updated"] != revision:
+        raise Refused(409, "Беседа изменилась. Откройте её настройки заново")
+    target = next((t for t in transfer_targets(uid, meta) if t["engine"] == engine), None)
+    if not target:
+        raise Refused(403, "Нет доступной модели другой нейросети для переноса")
+    snapshot = core.export_markdown(meta, core.history(uid, meta["id"]))
+    # Crucially do not check the exhausted source network's quota or call its CLI.
+    room(uid, users.settings(uid), len(snapshot.encode("utf-8")))
+    return core.transfer_chat(uid, meta, engine, target["model"], target["effort"], snapshot)
+
+
 def human(n):
     for unit in ("Б", "КБ", "МБ", "ГБ"):
         if n < 1024 or unit == "ГБ":
@@ -190,6 +222,9 @@ async def retry(uid, meta, text=None, channel="web"):
     if not any(e.get("kind") == "user" for e in past[:at]) and \
             meta["title"] == asked["text"].strip().replace("\n", " ")[:60]:
         meta["title"] = ""
+    boundary = max((i for i, e in enumerate(past[:at]) if e.get("kind") == "engine_changed"), default=-1)
+    if meta.get("handoff") and not any(e.get("kind") == "user" for e in past[boundary + 1:at]):
+        meta["handoff"]["pending"] = True
     rewind = core.rewind(uid, meta, asked["text"])
     core.append_history(uid, meta["id"], {"kind": "retry", "ts": time.time()})
     return await start(uid, meta, text, data, list(asked.get("files") or []), images, channel,

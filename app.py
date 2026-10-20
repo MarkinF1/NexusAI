@@ -276,6 +276,33 @@ class Retry(BaseModel):
     text: str | None = None  # изменённый запрос; нет — тот же
 
 
+@app.get("/api/chats/{chat}/transfer")
+def transfer_options(chat: str, user=Depends(current_user)):
+    meta = own_chat(user, chat)
+    key = (user["id"], chat)
+    blocked = ("Дождитесь окончания ответа или расшифровки" if key in jobs.jobs or jobs.transcribing[key]
+               else "Сначала перенесите беседу из Telegram на сайт" if jobs.in_tg(meta) else "")
+    return {"engine": meta["engine"], "updated": meta["updated"],
+            "targets": jobs.transfer_targets(user["id"], meta), "blocked": blocked}
+
+
+class ChatTransfer(BaseModel):
+    engine: str
+    from_engine: str
+    revision: float
+
+
+@app.post("/api/chats/{chat}/transfer")
+async def transfer_chat(chat: str, body: ChatTransfer, user=Depends(current_user)):
+    meta = own_chat(user, chat)
+    try:
+        return jobs.transfer(user["id"], meta, body.engine, body.from_engine, body.revision)
+    except jobs.Refused as exc:
+        raise HTTPException(exc.status, str(exc))
+    except (OSError, ValueError):
+        raise HTTPException(500, "Не удалось сохранить перенос. Беседа не изменена")
+
+
 @app.post("/api/chats/{chat}/retry")
 async def retry(chat: str, body: Retry, user=Depends(current_user)):
     """Повторить или изменить последний запрос: прежний ответ заменяется новым."""
@@ -336,7 +363,7 @@ class ChatChange(BaseModel):
 
 
 @app.patch("/api/chats/{chat}")
-def change_chat(chat: str, body: ChatChange, user=Depends(current_user)):
+async def change_chat(chat: str, body: ChatChange, user=Depends(current_user)):
     meta = own_chat(user, chat)
     idle(user, chat)
     in_tg(meta)
@@ -355,11 +382,12 @@ def change_chat(chat: str, body: ChatChange, user=Depends(current_user)):
         if reason:
             raise HTTPException(403, reason)
         meta["effort"] = body.effort
+    meta["updated"] = time.time()
     return core.save_chat(user["id"], meta)
 
 
 @app.post("/api/chats/{chat}/move")
-def move_chat(chat: str, user=Depends(current_user)):
+async def move_chat(chat: str, user=Depends(current_user)):
     """Беседа из Telegram переезжает на сайт: бот в ней больше не отвечает."""
     meta = own_chat(user, chat)
     idle(user, chat)
@@ -370,7 +398,7 @@ def move_chat(chat: str, user=Depends(current_user)):
 
 
 @app.delete("/api/chats/{chat}")
-def delete_chat(chat: str, files: bool = False, user=Depends(current_user)):
+async def delete_chat(chat: str, files: bool = False, user=Depends(current_user)):
     """files — удалить и файлы беседы (из беседы и из библиотеки); иначе они остаются в библиотеке."""
     meta = own_chat(user, chat)
     idle(user, chat)

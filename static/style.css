@@ -398,6 +398,22 @@ dialog {
 dialog::backdrop { background: rgba(20, 28, 24, .4); }
 dialog h3 { margin-top: 4px; }
 dialog form { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+#chat-settings { padding: 0; width: min(440px, calc(100vw - 32px)); overflow: hidden; }
+.chat-settings-content { padding: 20px; }
+.chat-settings-content > button { display: inline-flex; align-items: center; gap: 8px; }
+.chat-settings-content svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#chat-settings-name { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.chat-transfer { margin: 20px 0; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.chat-transfer label { display: block; margin-bottom: 8px; font-weight: 500; }
+#chat-transfer-target { width: 100%; }
+#chat-transfer-status { margin-bottom: 0; line-height: 1.5; }
+#chat-transfer-confirm { width: min(480px, calc(100vw - 32px)); }
+#chat-transfer-confirm p { overflow-wrap: anywhere; line-height: 1.5; }
+/* Не наследуем цвет текущей сети для прежних сообщений. */
+#feed > [data-engine] { --rail: color-mix(in srgb, var(--engine) 38%, transparent); --error: var(--engine); }
+.msg-user[data-engine]::after { background: var(--engine); }
+.msg-text[data-engine]::after { left: 5px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--engine); }
+.msg-engine-change { color: var(--engine); padding-top: 12px !important; border-top: 1px solid var(--line); }
 #delete-chat .delete-hint { margin: 6px 0 0 24px; }
 #library, #files { padding: 0; width: min(760px, calc(100vw - 32px)); max-height: min(740px, calc(100vh - 32px)); }
 #files { width: min(520px, calc(100vw - 32px)); }
@@ -637,7 +653,7 @@ input:disabled + *, label:has(input:disabled) { opacity: .45; }
   #chat header { flex-wrap: wrap; gap: 6px 4px; padding: calc(6px + env(safe-area-inset-top)) 6px 8px 10px; min-height: 0; }
   #chat header::after { content: ""; order: 3; flex-basis: 100%; }
   #title { order: 1; flex: 1; min-width: 0; font-size: 16px; }
-  #export, #files-open, #delete { order: 2; }
+  #files-open, #chat-settings-open, #delete { order: 2; }
   #chat header select { min-width: 0; padding: 5px 8px; }
   #feed { padding: 18px 12px 8px; }
   #feed > * { padding-left: 26px; background-position-x: 7px; }

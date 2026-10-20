@@ -89,7 +89,7 @@ class Bot_(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(app.HTTPException):  # с сайта в неё не пишут
             await app.send(meta["id"], "x", [], user)
 
-        app.move_chat(meta["id"], user)
+        await app.move_chat(meta["id"], user)
         await self.feed("ещё")
         self.assertEqual(self.api.texts()[-1], tg.MOVED)
         self.assertIn(meta["id"], [c["id"] for c in app.chats(user)])  # перенесённая видна всегда
