@@ -212,7 +212,8 @@ class Transfer(unittest.TestCase):
         project.mkdir(parents=True, exist_ok=True)
         (project / (new["sid"] + ".jsonl")).write_text("local journal")
         (project / "unrelated.jsonl").write_text("keep")
-        with patch.object(core.subprocess, "run") as delete:
+        with patch.object(core, "CODEX_BIN", "codex-test"), \
+                patch.object(core.subprocess, "run") as delete:
             core.delete_chat(self.uid, new)
             self.assertTrue(any(call.args[0][-1] == "original-thread" for call in delete.call_args_list))
         self.assertFalse((project / (new["sid"] + ".jsonl")).exists())
