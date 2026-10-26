@@ -1078,6 +1078,76 @@ class Permissions(unittest.TestCase):
         args = core.claude_args(3, self.meta, self.cwd, {**ALL, **off})
         return args, json.loads(args[args.index("--settings") + 1])
 
+    def test_full_access_defaults_and_roundtrip(self):
+        defaults = users.clean({})
+        for engine in ("claude", "codex"):
+            self.assertFalse(defaults["access"][engine]["full_access"])
+            saved = users.clean({"access": {engine: {"full_access": True, "bash": False,
+                                                   "write": False, "network": False}}})
+            self.assertTrue(saved["access"][engine]["full_access"])
+            self.assertFalse(saved["access"][engine]["bash"])
+            self.assertEqual(users.clean(saved), saved)
+
+    def test_claude_full_access_overrides_and_restores_restrictions(self):
+        restrictions = dict(bash=False, write=False, memory=False, network=False,
+                            all_chats=False, commands=True, allowed_commands=["ls"],
+                            denied_commands=["python"], site_deny=True, denied_sites=["example.com"])
+        args, settings = self.claude(full_access=True, **restrictions)
+        self.assertEqual(args[args.index("--permission-mode") + 1], "bypassPermissions")
+        self.assertNotIn("--restricted", args)
+        self.assertIn("Bash", args[args.index("--tools") + 1].split(","))
+        self.assertIn("Write", args[args.index("--tools") + 1].split(","))
+        self.assertFalse(settings["sandbox"]["enabled"])
+        self.assertEqual(settings["sandbox"]["filesystem"], {})
+        self.assertEqual(settings["permissions"]["deny"], [])
+        self.assertEqual(settings["sandbox"]["network"], {"allowedDomains": ["*"]})
+        self.assertIn("Полный доступ включён", args[args.index("--system-prompt") + 1])
+        args, settings = self.claude(full_access=False, **restrictions)
+        self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
+        self.assertTrue(settings["sandbox"]["enabled"])
+        self.assertNotIn("Bash", args[args.index("--tools") + 1].split(","))
+
+    def test_codex_full_access_on_new_and_resumed_thread(self):
+        import tomllib
+        restrictions = {**ACCESS["codex"], "full_access": True, "bash": False,
+                        "write": False, "memory": False, "network": False, "all_chats": False,
+                        "site_allow": True, "allowed_sites": ["example.com"],
+                        "unsandboxed": True, "unsandboxed_commands": ["python3"]}
+        original = json.loads(json.dumps(restrictions))
+        for sid in ("", "existing-thread"):
+            with self.subTest(sid=sid):
+                # Full access must remove stale rules before CLI loads them.
+                core.codex_rules(3, ["ls"])
+                args = core.codex_args(3, {**self.meta, "engine": "codex", "sid": sid},
+                                       self.cwd, ["example.png"], restrictions)
+                conf = tomllib.loads("\n".join(args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-c"))
+                self.assertEqual(args[args.index("--sandbox") + 1], "danger-full-access")
+                self.assertEqual(conf["default_permissions"], ":danger-full-access")
+                self.assertEqual(conf["approval_policy"], "never")
+                self.assertNotIn("permissions", conf)
+                self.assertTrue(conf["features"]["shell_tool"])
+                self.assertFalse(conf["features"]["network_proxy"]["enabled"])
+                self.assertIn("Полный доступ включён", conf["developer_instructions"])
+                self.assertNotIn("Вне песочницы, прямо на сервере, выполняются только", conf["developer_instructions"])
+                self.assertEqual(args[-3:], ["-i", "example.png", "-"])
+                self.assertEqual("resume" in args, bool(sid))
+                self.assertFalse(os.path.exists(os.path.join(core.codex_home(3), "rules", "nexus.rules")))
+        self.assertEqual(restrictions, original)
+        restored = self.codex_settings(full_access=False, bash=False, write=False, network=False)
+        self.assertEqual(restored["default_permissions"], "chat")
+        self.assertFalse(restored["features"]["shell_tool"])
+        self.assertFalse(restored["permissions"]["chat"]["network"]["enabled"])
+
+    def test_full_access_does_not_mutate_saved_restrictions(self):
+        source = {**ACCESS["codex"], "full_access": True, "write": False, "bash": False,
+                  "site_allow": True, "allowed_sites": ["example.com"]}
+        runtime = core.effective_access(source)
+        self.assertTrue(runtime["write"] and runtime["bash"])
+        self.assertFalse(runtime["site_allow"])
+        self.assertFalse(source["write"] or source["bash"])
+        self.assertTrue(source["site_allow"])
+        self.assertIs(core.effective_access({"full_access": False}).get("full_access"), False)
+
     def test_claude_all(self):
         args, settings = self.claude()
         self.assertIn("Bash", args[args.index("--tools") + 1])

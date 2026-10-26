@@ -2058,11 +2058,15 @@ const ACCESS_NOTE = { codex: "Списки доменов ограничиваю
 // Опасная зона: действия вне песочницы. Галочки нужны с Bash, без него неактивны.
 const ACCESS_DANGER = {
   claude: [
+    ["full_access", "Полный доступ",
+      "Все команды без песочницы и запросов подтверждения. Разрешены чтение и изменение файлов сервера и доступ к сети в пределах прав системного пользователя сервиса. Ограничения файлов, памяти, сети и списки команд ниже не действуют. Применяется со следующего запроса.", []],
     ["unsandboxed", "Команды вне песочницы",
       "Перечисленные команды выполняются на сервере напрямую, с правами его хозяина. Наружу выходит только одиночный вызов: «docker ps» — да, «docker ps && cat …» или «… | docker …» целиком остаются в песочнице. Команда без аргументов совпадает с любыми аргументами: «docker» — это и «docker run …».",
       [["unsandboxed_commands", "Команды вне песочницы", "docker ps\nsystemctl --user status"]]],
   ],
   codex: [
+    ["full_access", "Полный доступ",
+      "Все команды без песочницы и запросов подтверждения. Разрешены чтение и изменение файлов сервера и доступ к сети в пределах прав системного пользователя сервиса. Ограничения файлов, памяти, сети и списки команд ниже не действуют. Применяется со следующего запроса.", []],
     ["unsandboxed", "Команды вне песочницы",
       "Перечисленные команды выполняются на сервере напрямую, с правами его хозяина. Наружу выходит вызов, у которого разрешена каждая часть: «docker ps && docker images» — да, если разрешены обе, «docker ps && cat …» или «… | grep …» целиком остаются в песочнице. Команда совпадает и с дополнительными аргументами: «docker» — это и «docker run …». Звёздочки не поддерживаются.",
       [["unsandboxed_commands", "Команды вне песочницы", "docker ps\nsystemctl --user status"]]],
@@ -2310,7 +2314,7 @@ function showCard() {
   }
 
   if (cardTab === "access") {
-    panel.append(el("p", "muted", "Песочница включена всегда: модель видит только папку этого пользователя."));
+    panel.append(el("p", "muted", "По умолчанию модель работает в песочнице. Полный доступ можно включить отдельно для каждой сети в опасной зоне."));
     const engines = Object.keys(card.catalog);
     if (!engines.length) panel.append(el("p", "muted", "На сервере нет подключённых нейросетей."));
     for (const engine of engines) {
@@ -2322,10 +2326,11 @@ function showCard() {
       box.append(legend);
       for (const [key, name, about] of ACCESS[engine]) {
         const option = el("div", "option");
-        const disabled = engine === "codex" && key === "memory" && !access.write;
-        option.append(checkbox(name, !disabled && access[key], (v) => { access[key] = v; showCard(); }, disabled), el("div", "muted", about));
+        const overridden = access.full_access && ["bash", "write", "memory", "network", "all_chats"].includes(key);
+        const disabled = overridden || (engine === "codex" && key === "memory" && !access.write);
+        option.append(checkbox(name, overridden || (!disabled && access[key]), (v) => { access[key] = v; showCard(); }, disabled), el("div", "muted", about));
         const more = ACCESS_MORE[engine]?.[key];
-        if (more && access[key]) {
+        if (more && access[key] && !overridden) {
           const sub = el("div", "sub");
           sub.append(...more(access));
           option.append(sub);
@@ -2336,12 +2341,14 @@ function showCard() {
         const danger = el("div", "danger-zone");
         danger.append(el("h4", "", "Опасная зона"), el("p", "", DANGER_NOTE));
         for (const [key, name, about, lists] of ACCESS_DANGER[engine]) {
-          danger.append(subOption(access, key, name, about, lists, !access.bash));
+          danger.append(subOption(access, key, name, about, lists,
+            key !== "full_access" && (!access.bash || access.full_access)));
         }
-        if (!access.bash) danger.append(el("p", "muted", "Нужен «Запуск команд»."));
+        if (!access.bash && !access.full_access) danger.append(el("p", "muted", "Для списка команд вне песочницы нужен «Запуск команд»."));
         box.append(danger);
       }
-      if (ACCESS_NOTE[engine]) box.append(el("p", "muted", ACCESS_NOTE[engine]));
+      if (access.full_access) box.append(el("p", "muted", "Полный доступ включён. Ограничения отключены; сохранённые настройки снова применятся после его выключения."));
+      else if (ACCESS_NOTE[engine]) box.append(el("p", "muted", ACCESS_NOTE[engine]));
       panel.append(box);
     }
   }

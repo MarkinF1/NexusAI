@@ -982,9 +982,21 @@ def bash_rules(commands):
     return [f"Bash({p})" for p in patterns(commands)]
 
 
-def system_prompt(uid, cwd, channel, commands=()):
+def system_prompt(uid, cwd, channel, commands=(), full_access=False):
     return (SYSTEM_PROMPT[channel] + OWNER_EMAIL + "\n" + session_files.instructions(cwd, memory_file(uid))
-            + outside_note(commands))
+            + ("\nПолный доступ включён: команды выполняются без песочницы и без запросов разрешений, "
+               "с правами системного пользователя сервиса. Доступ к файлам и сети не ограничен "
+               "галочками сайта. Для работы за пределами рабочей папки следуй запросу пользователя.\n"
+               if full_access else outside_note(commands)))
+
+
+def effective_access(access):
+    """Полный доступ перекрывает ограничения, не меняя сохранённые настройки."""
+    if not access.get("full_access", False):
+        return access
+    return {**access, "bash": True, "write": True, "memory": True, "network": True,
+            "all_chats": True, "commands": False, "site_allow": False,
+            "site_deny": False, "unsandboxed": False}
 
 
 def outside(access):
@@ -1105,6 +1117,8 @@ def _codex_user(line, text):
 
 
 def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
+    access = effective_access(access)
+    full = access.get("full_access", False)
     found = glob.glob(os.path.join(claude_home(uid), "projects", "*", meta["sid"] + ".jsonl"))
     data = data_dir(uid)
     others = other_workspaces(uid, meta["id"], access)
@@ -1162,6 +1176,9 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
     # Снятый скилл остаётся в списке у модели (skillOverrides из --settings его не
     # прячет), но запуск блокируется.
     deny += [f"Skill(nexus:{name})" for name in access["skills_off"] if name in installed]
+    if full:
+        filesystem = {}
+        deny = [f"Skill(nexus:{name})" for name in access["skills_off"] if name in installed]
     cli_settings = {}
     if installed:
         # --safe-mode выключил бы и наш плагин, поэтому то же закрываем по отдельности.
@@ -1179,13 +1196,13 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         "--input-format", "stream-json",
         "--output-format", "stream-json", "--verbose",
         *mode,
-        "--restricted", "--tools", ",".join(tools),
-        "--permission-mode", "dontAsk",
+        *([] if full else ["--restricted"]), "--tools", ",".join(tools),
+        "--permission-mode", "bypassPermissions" if full else "dontAsk",
         "--add-dir", data,  # файловым инструментам — та же папка, что и Bash
         "--settings", json.dumps({
             **cli_settings,
             "sandbox": {
-                "enabled": True, "failIfUnavailable": True,
+                "enabled": not full, "failIfUnavailable": not full,
                 "autoAllowBashIfSandboxed": not only_listed, "allowUnsandboxedCommands": False,
                 "excludedCommands": patterns(outside_cmds),
                 # Закрыто всё хозяйство сайта (база, токены подписок, чужие
@@ -1199,7 +1216,7 @@ def claude_args(uid, meta, cwd, access, channel="web", rewind=None):
         }),
         "--system-prompt-snapshot", "off",
         "--model", meta["model"],
-        "--system-prompt", system_prompt(uid, cwd, channel, outside_cmds),
+        "--system-prompt", system_prompt(uid, cwd, channel, outside_cmds, full_access=full),
         # Транскрипт уже есть — продолжаем, иначе создаём сессию с нашим id.
         "--resume" if found else "--session-id", meta["sid"],
     ] + (["--effort", meta["effort"]] if meta["effort"] else []) + (
@@ -1247,12 +1264,29 @@ def codex_rules(uid, commands):
 
 def codex_args(uid, meta, cwd, files, access, channel="web"):
     """Права Codex CLI: инструменты, файловая песочница и сеть команд."""
+    access = effective_access(access)
     args = [CODEX_BIN, "exec", "-C", cwd] + (["resume", meta["sid"]] if meta["sid"] else []) + [
         "--json", "--skip-git-repo-check", "-m", meta["model"]] + codex_untrusted(cwd)
     # Опасная зона: эти команды идут мимо песочницы с правами хозяина сервера.
     codex_rules(uid, outside(access))
     if meta["effort"]:
         args += ["-c", f'model_reasoning_effort="{meta["effort"]}"']
+    if access.get("full_access", False):
+        # Явный режим действует и при resume. Не создаём частичный профиль chat;
+        # удалённые выше rules не должны мешать запуску или оставлять старые allow.
+        args[2:2] = ["--sandbox", "danger-full-access"]
+        for setting in ('default_permissions=":danger-full-access"', 'approval_policy="never"',
+                        'features.shell_tool=true', 'features.network_proxy.enabled=false',
+                        "features.multi_agent=" + ("true" if access["multi_agent"] else "false"),
+                        'web_search="%s"' % (("cached" if access["web_cached"] else "live")
+                                             if access["web"] else "disabled"),
+                        'developer_instructions=' + json.dumps(system_prompt(uid, cwd, channel, full_access=True))):
+            args += ["-c", setting]
+        # Настройка публикации скиллов остаётся независимой от прав сервера.
+        codex_skills(uid, access["skills"], access["skills_off"])
+        for path in files:
+            args += ["-i", path]
+        return args + ["-"]
     mode = "write" if access["write"] else "read"
     data = data_dir(uid)
     rules = {data: mode}

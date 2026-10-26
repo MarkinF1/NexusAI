@@ -25,11 +25,11 @@ LOCK_AFTER, LOCK_FOR = 5, 15 * 60  # столько неудачных вход�
 # новые ограничения выключены.
 ACCESS = {"claude": {"bash": True, "write": True, "memory": True, "network": True, "web": True,
                      "all_chats": True, "site_allow": False, "site_deny": False, "commands": False,
-                     "unsandboxed": False, "skills": True},
+                     "unsandboxed": False, "skills": True, "full_access": False},
           "codex": {"bash": True, "write": True, "memory": True, "network": True,
                     "web": True, "web_cached": False, "all_chats": True,
                     "multi_agent": True, "skills": True, "site_allow": False, "site_deny": False,
-                    "unsandboxed": False}}
+                    "unsandboxed": False, "full_access": False}}
 # Списки к галочкам site_allow, site_deny, commands и unsandboxed; skills_off — снятые скиллы.
 LISTS = {"claude": ("allowed_sites", "denied_sites", "allowed_commands", "denied_commands",
                     "unsandboxed_commands", "skills_off"),
