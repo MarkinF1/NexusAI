@@ -205,6 +205,8 @@ input, textarea {
 }
 #feed > :first-child { background-position: 9px 26px; }
 #feed > *::after { content: ""; position: absolute; }
+#feed > .history-more { display: block; background: none; padding: 8px 16px; margin: 0 auto 16px; color: var(--muted); }
+#feed > .history-more::after { content: none; }
 
 .msg-user { padding: 24px 18px 30px 50px !important; white-space: pre-wrap; font-weight: 500; }
 .msg-user::before { content: ""; position: absolute; inset: 10px 0 16px 32px; z-index: -1; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; }

@@ -242,6 +242,53 @@ def history(uid, chat):
     return result
 
 
+def history_page(uid, chat, before=None, limit=20):
+    """Последние сообщения с курсором по неизменяемым номерам событий для SSE.
+
+    Граница страницы проходит между ходами: команды, голосовые и retry не
+    отрываются от своего запроса. Поэтому сообщений может быть немного больше limit.
+    """
+    events = history(uid, chat)
+    shown = []
+    meta = load_chat(uid, chat) or {}
+    engine = meta.get("initial_engine", meta.get("engine"))
+    for index, event in enumerate(events):
+        engine = event.get("engine", engine)
+        if event.get("kind") == "retry":
+            asked = next((i for i in range(len(shown) - 1, -1, -1)
+                          if shown[i][1].get("kind") == "user"), None)
+            if asked is not None:
+                del shown[asked:]
+        else:
+            shown.append((index, {"engine": engine, **event}))
+
+    # Страницы начинаются с запроса, голосового или смены сети/сжатия.
+    # Голосовое, отправленное как user, остаётся в том же блоке.
+    boundaries = []
+    answered_voice = False
+    for pos, (_, event) in enumerate(shown):
+        kind = event.get("kind")
+        if kind == "voice_answer":
+            answered_voice = bool(event.get("ok"))
+        if kind in ("user", "voice", "engine_changed", "compact"):
+            if kind == "user" and answered_voice:
+                answered_voice = False
+                continue
+            boundaries.append(pos)
+
+    end = next((pos for pos, (index, _) in enumerate(shown)
+                if before is not None and index >= before), len(shown))
+    start, messages = end, 0
+    while start > 0 and messages < limit:
+        start -= 1
+        if shown[start][1].get("kind") in ("user", "text", "voice", "transcript"):
+            messages += 1
+    start = max((pos for pos in boundaries if pos <= start), default=0)
+    return {"history": [event for _, event in shown[start:end]],
+            "before": shown[start][0] if start > 0 else None,
+            "total": len(events)}
+
+
 def visible(events):
     """Журнал без заменённых ходов: отметка retry убирает всё с последней реплики
     пользователя. Журнал только дописывается — номера событий у вкладок не съезжают."""

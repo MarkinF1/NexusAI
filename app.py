@@ -165,13 +165,19 @@ def logout(request: Request, response: Response):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    """Пользователь и сводка для боковой панели: сети, диск, расход подписки."""
+    """Пользователь и лимиты; занятое место запрашивается отдельно."""
     data = users.settings(user["id"])
     avail = users.available(data)
     spent = usage.summary(user["id"], data)
     return {**user, "engines": list(avail), "tg_bot": tg.bot_name,
-            "disk": {"used": usage.disk(user["id"])["total"], "quota": data["quota_mb"] * 2 ** 20},
+            "disk": {"used": None, "quota": data["quota_mb"] * 2 ** 20},
             "limits": {e: spent[e] for e in avail}}
+
+
+@app.get("/api/me/disk")
+def my_disk(user=Depends(current_user)):
+    data = users.settings(user["id"])
+    return {"used": usage.disk(user["id"])["total"], "quota": data["quota_mb"] * 2 ** 20}
 
 
 # --- Telegram ---
@@ -266,8 +272,11 @@ def new_chat(body: NewChat, user=Depends(current_user)):
 
 
 @app.get("/api/chats/{chat}")
-def get_chat(chat: str, user=Depends(current_user)):
-    return {"chat": own_chat(user, chat), "history": core.history(user["id"], chat),
+def get_chat(chat: str, user=Depends(current_user), before: int | None = None, limit: int = 20):
+    meta = own_chat(user, chat)
+    if not 1 <= limit <= 100 or (before is not None and before < 0):
+        raise HTTPException(400, "Некорректная страница истории")
+    return {"chat": meta, **core.history_page(user["id"], chat, before, limit),
             "running": (user["id"], chat) in jobs.jobs,
             "transcribing": jobs.transcribing[(user["id"], chat)] > 0}
 

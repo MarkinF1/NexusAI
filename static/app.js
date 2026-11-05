@@ -437,7 +437,7 @@ $("#login").onsubmit = async (e) => {
   try {
     me = await api("/api/login", { method: "POST", json: { name: f.get("name"), password: f.get("password") } });
     e.target.reset();
-    start();
+    await start();
   } catch (err) {
     $("#login-error").textContent = err.message;
   }
@@ -470,20 +470,25 @@ function lastChat(id) {
 }
 
 async function start() {
+  const [user, availableModels, chats] = await Promise.all([
+    api("/api/me"),
+    api("/api/models"),
+    loadChats(),
+  ]);
+  me = user;
+  models = availableModels;
   $("#login").hidden = true;
   $("#main").hidden = false;
-  me = await api("/api/me");  // после входа в me только имя: сети и лимиты берём здесь
   $("#me").textContent = me.name;
   $("#settings").classList.toggle("admin", me.is_admin);
-  models = await api("/api/models");
   showMe();
   showTg();
-  const chats = await loadChats();
+  refreshDisk();
   const saved = lastChat();
   const remembered = chats.some((chat) => chat.id === saved) ? saved : "";
   if (saved && !remembered) lastChat("");
   const id = location.hash.slice(1) || remembered;
-  if (id && await openChat(id)) return;
+  if (id && await openChat(id, undefined, { refreshChats: false })) return;
   showEmpty();
 }
 
@@ -556,9 +561,11 @@ let diskFull = false;
 
 function showMe() {
   const disk = me.disk;
-  diskFull = !!disk.quota && disk.used >= disk.quota;
+  diskFull = disk.used != null && !!disk.quota && disk.used >= disk.quota;
   const diskBlock = el("div", "budget");
-  diskBlock.append(disk.quota
+  diskBlock.append(disk.used == null
+    ? el("span", "muted", "Диск: подсчёт…")
+    : disk.quota
     ? meter("Диск", disk.used / disk.quota * 100, 100, `${size(disk.used)} из ${size(disk.quota)}`)
     : meter("Диск", 0, 0, size(disk.used)));
   $("#quota").replaceChildren(diskBlock);
@@ -634,8 +641,25 @@ async function showSize() {
 }
 
 async function refreshMe() {
-  me = await api("/api/me");
+  const user = await api("/api/me");
+  if (user.id === me?.id) user.disk.used = me.disk.used;
+  me = user;
   showMe();
+  refreshDisk();
+}
+
+async function refreshDisk() {
+  const uid = me.id;
+  try {
+    const disk = await api("/api/me/disk");
+    if (me?.id !== uid) return;
+    me.disk = disk;
+    showMe();
+  } catch {
+    if (me?.id === uid && me.disk.used == null) {
+      $("#quota").textContent = "Не удалось подсчитать место на диске";
+    }
+  }
 }
 
 // --- Беседы ---
@@ -678,7 +702,7 @@ async function showSearch(q) {
     a.title = c.hits ? `Совпадений в сообщениях: ${c.hits}` : "Совпадение в названии";
     a.dataset.engine = c.engine;
     a.href = "#" + c.id;
-    a.onclick = (e) => { e.preventDefault(); openChat(c.id, q); };
+    a.onclick = (e) => { e.preventDefault(); openChat(c.id, c.hits ? q : undefined); };
     return a;
   }));
 }
@@ -688,10 +712,11 @@ function showFound(q) {
   const needle = q.toLowerCase();
   const hit = [...$("#feed").querySelectorAll(":scope > .msg-user, :scope > .msg-text, :scope > .msg-transcript")]
     .find((n) => n.textContent.toLowerCase().includes(needle));
-  if (!hit) return;
+  if (!hit) return false;
   hit.scrollIntoView({ block: "center" });
   hit.classList.add("flash");
   setTimeout(() => hit.classList.remove("flash"), 2000);
+  return true;
 }
 
 async function loadChats() {
@@ -736,12 +761,17 @@ async function newChat(engine) {
 }
 document.addEventListener("click", () => { $("#add-menu").hidden = true; });
 
-async function openChat(id, found) {
+let chatOpenGen = 0;
+let historyBefore = null, historyLoading = false;
+
+async function openChat(id, found, { refreshChats = true } = {}) {
+  const opening = ++chatOpenGen;
   pauseVoice();
   stream?.close();
   stream = null;
   let data;
   try { data = await api(`/api/chats/${id}`); } catch (err) { alert(err.message); return; }
+  if (opening !== chatOpenGen) return false;
   current = data.chat;
   history.replaceState(null, "", "#" + id);
   lastChat(id);
@@ -754,8 +784,11 @@ async function openChat(id, found) {
   turnEngine = renderEngine;
   lastAsk = null;
   stopEdit(true);
-  data.history.forEach(render);
-  count = data.history.length;
+  data.history.forEach((event) => render(event));
+  count = data.total;
+  historyBefore = data.before;
+  historyLoading = false;
+  showHistoryMore();
   // Голосовое расшифровывается, а запрос ушёл из другой вкладки или до перезагрузки:
   // показываем ожидание и перечитываем беседу, пока расшифровка не появится.
   waiting = data.transcribing && !transcribing.has(id);
@@ -770,15 +803,84 @@ async function openChat(id, found) {
   $("#tg-bar").hidden = !inTg;
   setRunning(data.running);
   if (data.running) follow();
-  if (found) showFound(found);
   $("#chat-size").hidden = true;
   compactOffer = false;
   $("#compact-bar").hidden = true;
   showSize();
-  loadChats();
+  if (refreshChats) loadChats();
+  else document.querySelectorAll("#chats a").forEach((a) => {
+    a.classList.toggle("active", a.hash === "#" + id);
+  });
   scrollDown(true);
+  if (found) {
+    while (current?.id === id && opening === chatOpenGen && !showFound(found) && historyBefore != null) {
+      if (!await loadOlderHistory()) break;
+    }
+  }
   return true;
 }
+
+function showHistoryMore() {
+  $("#history-more")?.remove();
+  if (historyBefore == null) return;
+  const button = el("button", "history-more", historyLoading ? "Загрузка…" : "Предыдущие сообщения");
+  button.id = "history-more";
+  button.type = "button";
+  button.disabled = historyLoading;
+  button.onclick = loadOlderHistory;
+  $("#feed").prepend(button);
+}
+
+async function loadOlderHistory() {
+  if (!current || historyBefore == null || historyLoading) return false;
+  const id = current.id, gen = feedGen, opening = chatOpenGen;
+  historyLoading = true;
+  showHistoryMore();
+  try {
+    const data = await api(`/api/chats/${id}?before=${historyBefore}`);
+    if (gen !== feedGen || opening !== chatOpenGen || current?.id !== id) return false;
+    const feed = $("#feed");
+    const anchor = [...feed.children].find((node) => node.id !== "history-more"
+      && node.getBoundingClientRect().bottom > feed.getBoundingClientRect().top);
+    const top = anchor?.getBoundingClientRect().top;
+    // Старые сообщения рисуем отдельно, сохраняя состояние текущего ответа.
+    const saved = { turn, lastAsk, renderEngine, turnEngine };
+    const older = el("div");
+    try {
+      turn = [];
+      lastAsk = null;
+      renderEngine = current.initial_engine || current.engine;
+      turnEngine = renderEngine;
+      data.history.forEach((event) => render(event, older));
+      endTurn(older);
+    } finally {
+      ({ turn, lastAsk, renderEngine, turnEngine } = saved);
+    }
+    historyBefore = data.before;
+    $("#history-more")?.remove();
+    feed.prepend(...older.childNodes);
+    historyLoading = false;
+    showHistoryMore();
+    if (anchor) feed.scrollTop += anchor.getBoundingClientRect().top - top;
+    return true;
+  } catch {
+    if (gen === feedGen && opening === chatOpenGen) {
+      const button = $("#history-more");
+      if (button) button.textContent = "Не удалось загрузить. Повторить";
+    }
+    return false;
+  } finally {
+    if (gen === feedGen && opening === chatOpenGen) {
+      historyLoading = false;
+      const button = $("#history-more");
+      if (button) button.disabled = false;
+    }
+  }
+}
+
+$("#feed").addEventListener("scroll", () => {
+  if ($("#feed").scrollTop < 160) loadOlderHistory();
+}, { passive: true });
 
 function showHeader() {
   $("#title").textContent = current.title || "Новая беседа";
@@ -958,20 +1060,19 @@ function copyBar(text) {
   return bar;
 }
 
-function endTurn() {
+function endTurn(feed = $("#feed")) {
   if (!turn.length) return;
   const text = turn.join("\n\n");
   turn = [];
   const bar = copyBar(text);
   bar.dataset.engine = turnEngine;
-  $("#feed").insertBefore(bar, $("#feed > .thinking"));
+  feed.insertBefore(bar, feed.querySelector(":scope > .thinking"));
 }
 
 // Подряд идущие команды модели — одна группа: видна последняя строкой, «Ещё N»
 // раскрывает весь список, и в раскрытом виде каждая команда показана целиком.
-function toolLine(ev, engine) {
-  const feed = $("#feed");
-  const thinking = $("#feed > .thinking");
+function toolLine(ev, engine, feed = $("#feed")) {
+  const thinking = feed.querySelector(":scope > .thinking");
   let group = thinking ? thinking.previousElementSibling : feed.lastElementChild;
   if (!group?.classList.contains("msg-tools") || group.dataset.engine !== engine) {
     group = el("div", "msg-tools");
@@ -1008,8 +1109,7 @@ function toolsLabel(group) {
 let lastAsk = null;
 let renderEngine = null, turnEngine = null;
 
-function render(ev) {
-  const feed = $("#feed");
+function render(ev, feed = $("#feed")) {
   const engine = ev.engine || renderEngine || current.engine;
   let node, after;
   if (ev.kind === "retry") {
@@ -1025,13 +1125,13 @@ function render(ev) {
     return;
   }
   if (ev.kind === "engine_changed") {
-    endTurn();
+    endTurn(feed);
     lastAsk = null;
     renderEngine = engine;
     turnEngine = engine;
     node = el("div", "msg-note msg-engine-change", `Сеть изменена: ${NAME[ev.from_engine] || ev.from_engine} → ${NAME[engine] || engine} · ${ev.model}`);
   } else if (ev.kind === "user") {
-    endTurn();
+    endTurn(feed);
     turnEngine = engine;
     node = el("div", "msg-user", ev.text);
     if (ev.files?.length) {
@@ -1047,7 +1147,7 @@ function render(ev) {
     node = el("div", "msg-text");
     node.innerHTML = DOMPurify.sanitize(marked.parse(ev.text));
   } else if (ev.kind === "tool") {
-    toolLine(ev, engine);
+    toolLine(ev, engine, feed);
   } else if (ev.kind === "warning") {
     node = el("div", "msg-error", ev.text);
   } else if (ev.kind === "error") {
@@ -1055,7 +1155,7 @@ function render(ev) {
     const limit = ev.limit || /^Лимит .* исчерпан/.test(ev.text || "");
     node = el("div", "msg-error" + (limit ? " msg-limit" : ""), limit ? ev.text : "Ошибка: " + ev.text);
   } else if (ev.kind === "compact") {
-    endTurn();
+    endTurn(feed);
     lastAsk = null;
     node = el("div", "msg-note", "Сжатие беседы…");
   } else if (ev.kind === "compacted") {
@@ -1064,12 +1164,12 @@ function render(ev) {
   } else if (ev.kind === "stopped") {
     node = el("div", "msg-note", "Остановлено");
   } else if (ev.kind === "voice") {
-    endTurn();
+    endTurn(feed);
     node = voiceNode(ev, `/api/chats/${current.id}/voice/${ev.id}`);
   } else if (ev.kind === "transcript") {
     node = transcriptNode(ev);
   } else if (ev.kind === "voice_answer") {
-    if (ev.voice === fixing) stopEdit(true);  // на вопрос уже ответили — править нечего
+    if (feed === $("#feed") && ev.voice === fixing) stopEdit(true);  // на вопрос уже ответили — править нечего
     // «Да» — текст ушёл репликой пользователя; «нет» — убираем только вопрос и кнопки.
     const asked = feed.querySelector(`.msg-transcript[data-voice="${ev.voice}"]`);
     if (ev.ok) asked?.remove();
@@ -1078,9 +1178,9 @@ function render(ev) {
     node = el("div", "chips");
     ev.files.forEach((p) => node.append(fileLink(p)));
   }
-  if (node) { node.dataset.engine = engine; feed.insertBefore(node, $("#feed > .thinking")); }
-  if (after) { after.dataset.engine = engine; feed.insertBefore(after, $("#feed > .thinking")); }
-  if (ev.kind === "done") endTurn();
+  if (node) { node.dataset.engine = engine; feed.insertBefore(node, feed.querySelector(":scope > .thinking")); }
+  if (after) { after.dataset.engine = engine; feed.insertBefore(after, feed.querySelector(":scope > .thinking")); }
+  if (ev.kind === "done") endTurn(feed);
 }
 
 function actionButton(icon, title, onclick) {
@@ -1515,7 +1615,7 @@ async function uploadVoice(blob, duration, peaks) {
   local.remove();
   wait.remove();
   if (events) {
-    events.forEach(render);
+    events.forEach((event) => render(event));
     count += events.length;
     scrollDown();
   }
@@ -2761,4 +2861,4 @@ $("#settings-open").onclick = async () => {
   showPush();
 };
 
-api("/api/me").then((user) => { me = user; start(); }).catch(() => {});
+start().catch(() => {});

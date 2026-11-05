@@ -22,7 +22,7 @@ const context = {current:{engine:'claude',id:'chat'},turn:[],
   marked:{parse:text=>text},DOMPurify:{sanitize:text=>text},plural:()=> 'команды',
 };
 vm.createContext(context);
-vm.runInContext(source.slice(source.indexOf('function endTurn()'),source.indexOf('function actionButton(')),context);
+vm.runInContext(source.slice(source.indexOf('function endTurn('),source.indexOf('function actionButton(')),context);
 const render = event => context.render(event);
 render({kind:'user',text:'Старый вопрос',engine:'codex'});
 render({kind:'text',text:'Старый ответ',engine:'codex'});
