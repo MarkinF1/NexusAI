@@ -41,7 +41,7 @@ class Node {
 
 function fixture() {
   const feed = new Node('div'), nodes = new Map([['#feed', feed]]), requests = [], pending = [];
-  const context = {current: null, stream: null, count: 0, turn: [], feedGen: 0, waiting: false,
+  const context = {AbortController, console, current: null, stream: null, count: 0, turn: [], feedGen: 0, waiting: false,
     compactOffer: false, fixing: null, transcribing: new Map(),
     NAME: {codex: 'Codex', claude: 'Claude'}, history: {replaceState() {}},
     $: id => {
@@ -117,5 +117,14 @@ function fixture() {
   search.pending.shift().resolve(search.page(null, 'needle'));
   await found;
   assert.ok(search.feed.children.some(n => n.textContent === 'needle'));
+
+  const restricted = fixture();
+  restricted.c.console = {warn() {}};
+  restricted.c.history.replaceState = () => { throw new Error('SecurityError'); };
+  const restrictedOpen = restricted.c.openChat('chat');
+  restricted.pending.shift().resolve(restricted.page(null, 'restored app'));
+  await restrictedOpen;
+  assert.equal(restricted.c.current.id, 'chat');
+  assert.ok(restricted.feed.children.some(n => n.textContent === 'restored app'), 'a denied URL update must not block navigation');
   console.log('PASS: paged opener, raw SSE cursor, scroll anchor, live renderer isolation, deduplication, stale navigation, retry and search');
 })().catch(error => { console.error(error); process.exitCode = 1; });

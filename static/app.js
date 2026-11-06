@@ -14,16 +14,61 @@ let me = null, models = null, current = null, stream = null, count = 0, running 
 let turn = [];
 let attachments = [];
 
+// A suspended iPhone web app can leave a fetch pending after returning online.
+// Bound both the connection and response body, even if abort itself stalls.
+async function apiResponse(path, opts, timeout) {
+  const controller = new AbortController();
+  const parent = opts.signal;
+  let timer, rejectRequest;
+  const pending = new Promise((_, reject) => { rejectRequest = reject; });
+  const cancel = () => {
+    controller.abort();
+    rejectRequest(Object.assign(new Error("Запрос отменён"), { name: "AbortError" }));
+  };
+  parent?.addEventListener("abort", cancel, { once: true });
+  if (parent?.aborted) cancel();
+  timer = setTimeout(() => {
+    controller.abort();
+    rejectRequest(Object.assign(new Error("Сервер не ответил вовремя. Проверьте соединение и повторите."), { name: "TimeoutError" }));
+  }, timeout);
+  try {
+    return await Promise.race([pending, (async () => {
+      const response = await fetch(path, { ...opts, cache: "no-store", signal: controller.signal });
+      const data = await response.json().catch(() => null);
+      if (controller.signal.aborted) throw Object.assign(new Error("Запрос отменён"), { name: "AbortError" });
+      return { response, data };
+    })()]);
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener("abort", cancel);
+  }
+}
+
 async function api(path, opts = {}) {
+  opts = { ...opts };
   if (opts.json !== undefined) {
     opts.body = JSON.stringify(opts.json);
     opts.headers = { "Content-Type": "application/json" };
+    delete opts.json;
   }
-  const r = await fetch(path, opts);
-  if (r.status === 401 && path !== "/api/login") { showLogin(); throw new Error("Нужно войти"); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : r.statusText);
-  return data;
+  const read = (opts.method || "GET").toUpperCase() === "GET";
+  const timeout = path === "/api/me/disk" ? 120000 : read ? 12000 : 120000;
+  for (let attempt = 0; ; attempt++) {
+    let result;
+    try {
+      result = await apiResponse(path, opts, timeout);
+    } catch (err) {
+      // Mutations are never retried: a timed-out POST may already be committed.
+      if (read && !attempt && !opts.signal?.aborted && (err.name === "TimeoutError" || err.name === "AbortError" || err instanceof TypeError)) continue;
+      if (err instanceof TypeError) throw new Error("Не удалось связаться с сервером. Проверьте соединение и повторите.");
+      throw err;
+    }
+    const { response: r, data } = result;
+    if (r.status === 401 && path !== "/api/login") { showLogin(); throw new Error("Нужно войти"); }
+    if (!r.ok) throw new Error(typeof data?.detail === "string" ? data.detail : r.statusText);
+    if (data === null) throw new Error("Не удалось прочитать ответ сервера. Повторите загрузку.");
+    return data;
+  }
 }
 
 function el(tag, cls, text) {
@@ -762,18 +807,30 @@ async function newChat(engine) {
 document.addEventListener("click", () => { $("#add-menu").hidden = true; });
 
 let chatOpenGen = 0;
+let chatRequest = null;
 let historyBefore = null, historyLoading = false;
 
 async function openChat(id, found, { refreshChats = true } = {}) {
   const opening = ++chatOpenGen;
+  chatRequest?.abort();
+  const request = chatRequest = new AbortController();
   pauseVoice();
   stream?.close();
   stream = null;
   let data;
-  try { data = await api(`/api/chats/${id}`); } catch (err) { alert(err.message); return; }
+  try {
+    data = await api(`/api/chats/${id}`, { signal: request.signal });
+  } catch (err) {
+    if (!request.signal.aborted && opening === chatOpenGen) alert(err.message);
+    return false;
+  } finally {
+    if (chatRequest === request) chatRequest = null;
+  }
   if (opening !== chatOpenGen) return false;
   current = data.chat;
-  history.replaceState(null, "", "#" + id);
+  // WebKit can reject history updates in a restored standalone document.
+  // The address bar is optional; opening the actual conversation is not.
+  try { history.replaceState(null, "", "#" + id); } catch (err) { console.warn("Could not update chat URL", err); }
   lastChat(id);
   side(false);
   $("#feed").replaceChildren();
@@ -1819,6 +1876,7 @@ function fileBrowser(id, spec) {
   const $$ = (part) => $(`#${id}-${part}`);
   const dialog = $(`#${id}`);
   const b = { items: [], picked: new Set(), selecting: false };
+  let loadingGeneration = 0;
 
   // Типы — только те, что есть, с числом файлов; выбранный сохраняется, пока такие есть.
   function fillKinds() {
@@ -1894,18 +1952,55 @@ function fileBrowser(id, spec) {
   };
 
   b.open = (items) => {
+    loadingGeneration++;
     b.items = items;
+    $$("search").disabled = $$("kind").disabled = false;
     $$("search").value = "";
     $$("kind").value = "";
     fillKinds();
     b.select(false);
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
+  };
+
+  // Open in the tap handler, before any network wait. Closing or reopening the
+  // dialog invalidates old requests so late responses cannot reopen it.
+  b.load = async (load) => {
+    b.open([]);
+    const generation = loadingGeneration;
+    const live = () => generation === loadingGeneration && dialog.open;
+    dialog.setAttribute("aria-busy", "true");
+    $$("search").disabled = $$("kind").disabled = true;
+    $$("list").replaceChildren(el("li", "muted", "Загрузка файлов…"));
+    $$("total").textContent = "Загрузка…";
+    try {
+      const items = await load();
+      if (live()) {
+        dialog.removeAttribute("aria-busy");
+        b.open(items);
+      }
+    } catch (err) {
+      if (!live()) return;
+      const message = el("li", "error", "Не удалось загрузить файлы. ");
+      const retry = el("button", "link", "Повторить");
+      retry.type = "button";
+      retry.onclick = () => b.load(load);
+      message.append(retry);
+      $$("list").replaceChildren(message);
+      $$("total").textContent = "Ошибка загрузки";
+      console.error("File list failed", err);
+    } finally {
+      if (generation === loadingGeneration) dialog.removeAttribute("aria-busy");
+    }
   };
 
   $$("search").oninput = b.show;
   $$("kind").onchange = b.show;
   $$("select").onclick = () => b.select(!b.selecting);
-  dialog.addEventListener("close", () => { if (b.selecting) b.select(false); });
+  dialog.addEventListener("close", () => {
+    loadingGeneration++;
+    dialog.removeAttribute("aria-busy");
+    if (b.selecting) b.select(false);
+  });
   $$("all").onclick = () => {
     const shown = b.shown();
     const all = shown.every((f) => b.picked.has(f.path));
@@ -2041,12 +2136,10 @@ $("#export").onclick = () => {
   return saveFile(`/api/chats/${chatId}/export`, name + ".md");
 };
 
-$("#files-open").onclick = async () => {
-  let items;
-  try {
-    items = await api(`/api/chats/${current.id}/files`);
-  } catch (err) { return alert(err.message); }
-  chatFiles.open(items);
+$("#files-open").onclick = () => {
+  if (!current) return;
+  const id = current.id;
+  return chatFiles.load(() => api(`/api/chats/${id}/files`));
 };
 
 // --- Библиотека ---
@@ -2122,12 +2215,9 @@ const library = fileBrowser("library", {
   },
 });
 
-$("#library-open").onclick = async () => {
-  let items;
-  try {
-    items = await api("/api/library");
-  } catch (err) { return alert(err.message); }
-  library.open(items);
+$("#library-open").onclick = () => {
+  side(false);
+  return library.load(() => api("/api/library"));
 };
 
 // --- Пользователи ---
@@ -2247,8 +2337,9 @@ function setLevel(level) {
 
 $("#settings-back").onclick = () => setLevel($("#settings").dataset.level === "section" && card ? "user" : "list");
 
-async function loadUsers(select) {
+async function loadUsers(select, live = () => true) {
   const list = await api("/api/users");
+  if (!live()) return;
   $("#users-list").replaceChildren(...list.map((u) => {
     const li = el("li");
     const b = el("button", card?.user.id === u.id ? "active" : "", u.name + (u.is_admin ? " ★" : ""));
@@ -2850,15 +2941,34 @@ $("#skills-open").onclick = async () => {
   setLevel("section");
 };
 
+let settingsOpenGen = 0;
 $("#settings-open").onclick = async () => {
+  const generation = ++settingsOpenGen;
   pauseVoice();
   side(false);
   $("#account-name").textContent = me.name;
   $("#account-role").textContent = me.is_admin ? "Администратор" : "Участник";
-  if (me.is_admin) await loadUsers();
   setLevel("list");
-  $("#settings").showModal();
+  const dialog = $("#settings");
+  if (!dialog.open) dialog.showModal();
   showPush();
+  if (me.is_admin) {
+    const live = () => generation === settingsOpenGen && dialog.open;
+    $("#users-list").replaceChildren(el("li", "muted", "Загрузка участников…"));
+    try {
+      await loadUsers(undefined, live);
+    } catch (err) {
+      if (!live()) return;
+      const message = el("li", "error", "Не удалось загрузить участников. ");
+      const retry = el("button", "link", "Повторить");
+      retry.type = "button";
+      retry.onclick = () => $("#settings-open").onclick();
+      message.append(retry);
+      $("#users-list").replaceChildren(message);
+      console.error("User list failed", err);
+    }
+  }
 };
+$("#settings").addEventListener("close", () => { settingsOpenGen++; });
 
 start().catch(() => {});
