@@ -3,3 +3,10 @@ __pycache__/
 data/
 .env
 .env.docker
+# Резервные копии и временные снимки с пользовательскими данными.
+/backups/
+/*.tar.gz
+/*.tgz
+/.nexus-backup-*/
+/.*.partial
+/.migration-*/
