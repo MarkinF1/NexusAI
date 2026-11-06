@@ -2971,4 +2971,21 @@ $("#settings-open").onclick = async () => {
 };
 $("#settings").addEventListener("close", () => { settingsOpenGen++; });
 
-start().catch(() => {});
+function startupError(err) {
+  showLogin();
+  $("#login-error").textContent = err.message || "Не удалось подключиться к сайту.";
+  const retry = $("#startup-retry");
+  if (retry) retry.hidden = err.message === "Нужно войти";
+}
+
+// A restored PWA can briefly pair new JS with its previous cached HTML.
+const startupRetry = $("#startup-retry");
+if (startupRetry) startupRetry.onclick = async () => {
+  const retry = startupRetry;
+  retry.disabled = true;
+  $("#login-error").textContent = "Подключение…";
+  try { await start(); } catch (err) { startupError(err); }
+  finally { retry.disabled = false; }
+};
+
+start().catch(startupError);

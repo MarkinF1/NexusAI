@@ -89,9 +89,25 @@ function browser() {
   const settings=browser();let usersDone;
   Object.assign(settings.c,{me:{name:'owner',is_admin:true},pauseVoice(){},side(){},setLevel(){},showPush(){},
     loadUsers:()=>new Promise(resolve=>{usersDone=resolve;})});
-  vm.runInContext(source.slice(source.indexOf('let settingsOpenGen ='),source.indexOf('start().catch')),settings.c);
+  vm.runInContext(source.slice(source.indexOf('let settingsOpenGen ='),source.indexOf('function startupError(')),settings.c);
   const opening=settings.c.$('#settings-open').onclick();
   assert.equal(settings.c.$('#settings').open,true,'settings must open before loading the participants');
   usersDone();await opening;
+  Object.assign(settings.c,{showLogin(){settings.c.loginShown=true;},start:async()=>{throw new Error('network unavailable');}});
+  vm.runInContext(source.slice(source.indexOf('function startupError('),source.indexOf('start().catch(startupError)')),settings.c);
+  settings.c.startupError(new Error('network unavailable'));
+  assert.equal(settings.c.loginShown,true);
+  assert.equal(settings.c.$('#startup-retry').hidden,false);
+  assert.equal(settings.c.$('#login-error').textContent,'network unavailable','startup errors must not leave a blank page');
+  await settings.c.$('#startup-retry').onclick();
+  assert.equal(settings.c.$('#startup-retry').disabled,false);
+  settings.c.startupError(new Error('Нужно войти'));
+  assert.equal(settings.c.$('#startup-retry').hidden,true);
+  const oldHTML=browser();
+  const oldQuery=oldHTML.c.$;
+  Object.assign(oldHTML.c,{$:id=>id==='#startup-retry'?null:oldQuery(id),showLogin(){},start:async()=>{}});
+  vm.runInContext(source.slice(source.indexOf('function startupError('),source.indexOf('start().catch(startupError)')),oldHTML.c);
+  oldHTML.c.startupError(new Error('offline'));
+  assert.equal(oldQuery('#login-error').textContent,'offline','cached HTML without the new button must remain usable');
   console.log('PASS: PWA stalled requests/body, cancellation, mutation safety, synchronous dialogs, close races and retry');
 })().catch(e=>{console.error(e);process.exitCode=1;});
