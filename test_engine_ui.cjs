@@ -29,7 +29,7 @@ function fixture(items) {
       return {};
     } };
   vm.createContext(context);
-  vm.runInContext(fragment + '\nglobalThis.testApi = {engineSettings, installEngine, waitEngineInstall, waitEngineLogin, engineInstallWatchers, engineChecks, openGeneral, checkEngineSettings};', context);
+  vm.runInContext(fragment + '\nglobalThis.testApi = {engineSettings, loginEngine, engineLoginDetails, installEngine, waitEngineInstall, waitEngineLogin, engineInstallWatchers, engineChecks, openGeneral, checkEngineSettings};', context);
   return {context, timers, calls, api: context.testApi, setItems: (value) => items = value,
     setCurrent: (value) => current = value, current: () => current, replacements: () => replacements};
 }
@@ -37,8 +37,37 @@ function buttons(node) {
   return [ ...(node.tag === 'button' ? [node] : []), ...node.children.flatMap(buttons) ];
 }
 const base = {engine: 'codex', name: 'Codex', install_url: 'https://chatgpt.com/codex/install.sh'};
+function descendants(node) { return [node, ...node.children.flatMap(descendants)]; }
 
 (async () => {
+  const authorizing = {...base, state:'authorizing', installed:true, login:false};
+  const device = fixture([authorizing]);
+  device.setCurrent(device.api.engineSettings([authorizing]));
+  const deviceLogin = {running:true, device_code:'ABCD-1234', url:'https://auth.openai.com/codex/device'};
+  const deviceApi = device.context.api;
+  device.context.api = async (url, options) => url.endsWith('/login') ? deviceLogin : deviceApi(url, options);
+  device.context.window = {open: () => null}; // Popup blockers must not navigate away from the code.
+  device.context.prompt = () => { throw new Error('device code must be displayed on the page'); };
+  let copied;
+  device.context.copyText = async text => { copied = text; };
+  await device.api.loginEngine('codex');
+  assert.ok(descendants(device.current()).some(n => n.tag === 'code' && n.textContent === 'ABCD-1234'));
+  const copy = buttons(device.current()).find(n => n.textContent === 'Скопировать код');
+  await copy.onclick();
+  assert.equal(copied, 'ABCD-1234');
+  const link = descendants(device.current()).find(n => n.tag === 'a');
+  assert.equal(link.href, deviceLogin.url);
+  assert.equal(link.target, '_blank');
+
+  // Reopening settings (or a code arriving after POST's timeout) restores it from polling.
+  const reopened = fixture([authorizing]);
+  reopened.setCurrent(reopened.api.engineSettings([authorizing]));
+  const reopenedApi = reopened.context.api;
+  reopened.context.api = async (url, options) => url.endsWith('/login') ? deviceLogin : reopenedApi(url, options);
+  reopened.timers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(descendants(reopened.current()).some(n => n.tag === 'code' && n.textContent === 'ABCD-1234'));
+
   for (const [state, installed, login, expected] of [
     ['missing', false, false, ['Установить', 'Проверить']],
     ['login', true, true, ['Авторизоваться', 'Проверить']],
@@ -47,7 +76,7 @@ const base = {engine: 'codex', name: 'Codex', install_url: 'https://chatgpt.com/
     ['error', true, false, ['Проверить']],
     ['installing', false, false, []],
     ['checking', true, true, []],
-    ['authorizing', true, false, ['Открыть вход']],
+    ['authorizing', true, false, ['Проверить', 'Открыть вход']],
   ]) {
     const f = fixture([]);
     const node = f.api.engineSettings([{...base, state, installed, login, installing: state === 'installing'}]);

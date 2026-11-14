@@ -379,6 +379,7 @@ async def change_chat(chat: str, body: ChatChange, user=Depends(current_user)):
     avail = users.available(users.settings(user["id"]))
     if body.title is not None:
         meta["title"] = body.title.strip()[:200]
+        meta["auto_title"] = "manual"
     if body.model is not None:
         if not any(m["slug"] == body.model for m in avail.get(meta["engine"], [])):
             raise HTTPException(403, "Эта модель вам недоступна")

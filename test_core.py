@@ -982,7 +982,7 @@ class Retry(unittest.TestCase):
         self.assertEqual([e["text"] for e in shown if e["kind"] == "user"], ["изменённый вопрос"])
         self.assertEqual(shown[-1]["kind"], "done")
         md = app.export(meta["id"], owner).body.decode()
-        self.assertTrue(md.startswith("# изменённый вопрос\n"))  # название — из нового запроса
+        self.assertTrue(md.startswith("# Привет\n"))  # автозаголовок сохраняется при повторе
         self.assertIn("### Вы", md)
         self.assertIn("изменённый вопрос", md)
         self.assertNotIn("первый вопрос", md)

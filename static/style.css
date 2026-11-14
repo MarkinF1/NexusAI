@@ -551,6 +551,9 @@ dialog.wide[open] { display: flex; flex-direction: column; }
 .engine-state .actions { flex-wrap: wrap; }
 .engine-state small { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .engine-state .actions { flex: 0 0 auto; margin: 0; }
+.engine-device-auth { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.engine-device-auth small, .engine-device-auth a { flex-basis: 100%; }
+.engine-device-code { font-size: 22px; font-weight: 700; letter-spacing: 2px; user-select: all; }
 .general-settings .setting { display: grid; gap: 4px; margin: 0 0 14px; max-width: 560px; }
 .general-settings .setting-name { font-size: 14px; font-weight: 500; }
 .general-settings .setting input, .general-settings .setting select { width: 100%; }

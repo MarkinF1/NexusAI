@@ -11,6 +11,7 @@ from pathlib import Path
 import core
 import push as web_push  # push() здесь — запись события в ленту
 import settings
+import titles
 import usage
 import users
 
@@ -35,6 +36,7 @@ class Job:
         self.stopped = False
         self.raw = False  # служебная команда CLI: уходит как есть, без приписки о папке
         self.rewind = None  # повтор: флаги отката сессии claude
+        self.title_prompt = None
         self.cond = asyncio.Condition()
 
     def attach(self, proc):
@@ -245,6 +247,9 @@ async def start(uid, meta, text, data, saved=(), images=(), channel="web", shown
     notes = "\n".join(f"Вложение: {path}" for path in
                       (paths if paths is not None else [f"files/from_user/{name}" for name in saved]))
     prompt = "\n\n".join(p for p in (text, notes) if p)
+    if not shown and meta.get("auto_title") == "pending" and not meta["title"] and not any(
+            e.get("kind") == "user" for e in core.visible(core.history(uid, meta["id"]))):
+        job.title_prompt = prompt
     if not meta["title"] and not shown:
         meta["title"] = text.strip().replace("\n", " ")[:60]
     meta["updated"] = time.time()
@@ -268,6 +273,24 @@ async def work(uid, meta, prompt, images, job, data, channel="web"):
     points, tokens, limited = [], [0, 0], None
     base = usage.global_snapshot()
     try:
+        if job.title_prompt is not None and not job.stopped:
+            try:
+                title = await titles.generate(uid, engine, job.title_prompt, job.attach)
+                if title and not job.stopped:
+                    meta["title"] = title
+                    core.save_chat(uid, meta)
+                    await push(key, job, {"kind": "title", "title": title})
+            except Exception:
+                log.exception("chat title failed")
+            meta["auto_title"] = "done"
+            core.save_chat(uid, meta)
+            # Отдельный запрос уже учтён: основной ответ начинает свой замер расхода.
+            started, base = time.time(), usage.global_snapshot()
+        if job.stopped:
+            raise RuntimeError("Остановлено")
+        limited = usage.check(uid, engine, data)
+        if limited:
+            raise RuntimeError(limited)
         async for event in core.run(uid, meta, prompt, data["access"][engine], images,
                                     on_proc=job.attach, channel=channel, raw=job.raw,
                                     rewind=job.rewind):

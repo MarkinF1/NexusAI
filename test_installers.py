@@ -140,6 +140,35 @@ class Installers(unittest.TestCase):
             self.assertEqual(core.CODEX_BIN, "/new/codex")
             self.assertIsNone(core._codex_version_cache)
 
+    def test_external_login_retires_pending_device_flow(self):
+        session = {"engine": "codex", "proc": Mock(poll=Mock(return_value=None)),
+                   "running": True, "complete": False, "error": "",
+                   "auth_freshness": 1, "condition": threading.Condition()}
+        with patch.dict(core._login_sessions, {"codex": session}), \
+                patch.object(core, "creds_freshness", return_value=2), \
+                patch.object(core, "installed", return_value=True), \
+                patch.object(core, "_run_check", side_effect=[(0, "logged in"), (0, "OK")]), \
+                patch.object(core, "stop") as stop:
+            state = core.login_state("codex")
+            self.assertTrue(state["complete"])
+            self.assertFalse(state["running"])
+            stop.assert_called_once_with(session["proc"])
+            self.assertIn("codex", core.engines())
+            # The cancelled device process must not undo the successful check.
+            session["proc"].stdout = []
+            session["proc"].wait.return_value = -15
+            core._watch_login("codex", session)
+            self.assertTrue(session["complete"])
+            self.assertEqual(session["error"], "")
+
+    def test_unchanged_credentials_do_not_probe_on_every_login_poll(self):
+        session = {"running": True, "auth_freshness": 1, "condition": threading.Condition()}
+        with patch.dict(core._login_sessions, {"codex": session}), \
+                patch.object(core, "creds_freshness", return_value=1), \
+                patch.object(core, "check_engine") as check:
+            self.assertTrue(core.login_state("codex")["running"])
+            check.assert_not_called()
+
     def test_install_api_admin_only_and_validation(self):
         routes = [r for r in app.app.routes if r.path == "/api/engines/{engine}/install"]
         self.assertEqual(len(routes), 2)

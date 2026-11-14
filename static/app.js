@@ -1355,6 +1355,11 @@ function follow() {
   stream = new EventSource(`/api/chats/${chat}/events?start=${count}`);
   stream.onmessage = (e) => {
     const ev = JSON.parse(e.data);
+    if (ev.kind === "title" && current?.id === chat) {
+      current.title = ev.title;
+      $("#title").textContent = ev.title;
+      loadChats();
+    }
     if (ev.kind === "engine_changed") { stream.close(); stream = null; openChat(chat); return; }
     render(ev);
     count++;
@@ -2631,6 +2636,7 @@ const ENGINE_STATUS = {
 
 const engineInstallWatchers = new Set();
 const engineLoginWatchers = new Set();
+const engineLoginDetails = new Map();
 const engineChecks = new Map();
 const engineCheckErrors = new Map();
 let engineRefreshSequence = 0;
@@ -2666,7 +2672,7 @@ function startEngineChecks(items) {
   // Independent requests: a slow provider must not delay the other provider's result.
   const tasks = [];
   for (const item of items) {
-    if (!item.installing && item.state !== "authorizing") tasks.push(checkEngineSettings(item.engine));
+    if (!item.installing) tasks.push(checkEngineSettings(item.engine));
   }
   Promise.all(tasks).then(async () => {
     models = await api("/api/models");
@@ -2721,7 +2727,15 @@ async function waitEngineLogin(engine) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       let login;
       try { login = await api(`/api/engines/${engine}/login`); } catch { return; }
-      if (login.running) continue;
+      if (login.running) {
+        const previous = engineLoginDetails.get(engine);
+        engineLoginDetails.set(engine, login);
+        if (previous?.device_code !== login.device_code || previous?.url !== login.url) {
+          await refreshEngineSettings();
+        }
+        continue;
+      }
+      engineLoginDetails.delete(engine);
       const checked = checkEngineSettings(engine);
       await refreshEngineSettings();
       await checked;
@@ -2744,13 +2758,11 @@ async function loginEngine(engine) {
   let login;
   try { login = await api(`/api/engines/${engine}/login`, { method: "POST" }); }
   catch (err) { authTab?.close(); alert(err.message); return; }
+  engineLoginDetails.set(engine, login);
+  await refreshEngineSettings();
   if (login.url) {
     if (authTab) authTab.location = login.url;
-    else location.href = login.url;
   } else authTab?.close();
-  if (login.device_code) {
-    prompt("Введите этот одноразовый код на открывшейся странице:", login.device_code);
-  }
   if (login.needs_code) {
     const code = prompt("После входа Claude покажет код. Вставьте его сюда:");
     if (code) {
@@ -2790,7 +2802,7 @@ function engineSettings(items) {
       login.onclick = () => loginEngine(item.engine);
       actions.append(login);
     }
-    if (!busy) {
+    if (!busy || item.state === "authorizing") {
       const check = el("button", "", "Проверить");
       check.type = "button";
       check.onclick = async () => {
@@ -2808,6 +2820,31 @@ function engineSettings(items) {
     }
     if (item.installing) waitEngineInstall(item.engine);
     if (item.state === "authorizing") {
+      const details = engineLoginDetails.get(item.engine);
+      if (item.engine === "codex") {
+        const device = el("div", "engine-device-auth");
+        device.append(el("small", "muted", details?.device_code
+          ? "Скопируйте одноразовый код и введите его на странице входа Codex:"
+          : "Получаем одноразовый код входа…"));
+        if (details?.device_code) {
+          device.append(el("code", "engine-device-code", details.device_code));
+          const copy = el("button", "", "Скопировать код");
+          copy.type = "button";
+          copy.onclick = async () => {
+            try { await copyText(details.device_code); copy.textContent = "Скопировано"; }
+            catch (err) { alert(err.message); }
+          };
+          device.append(copy);
+        }
+        if (details?.url) {
+          const link = el("a", "", "Перейти на страницу входа Codex");
+          link.href = details.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          device.append(link);
+        }
+        text.append(device);
+      }
       const resume = el("button", "", "Открыть вход");
       resume.type = "button";
       resume.onclick = () => loginEngine(item.engine);

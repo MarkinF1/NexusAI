@@ -179,7 +179,7 @@ def create_chat(uid, engine, model, effort=""):
     now = time.time()
     # У claude id сессии придумываем мы, у codex его выдаст первый ответ.
     sid = str(uuid.uuid4()) if engine == "claude" else ""
-    return save_chat(uid, {"id": uuid.uuid4().hex, "title": "", "engine": engine, "model": model,
+    return save_chat(uid, {"id": uuid.uuid4().hex, "title": "", "auto_title": "pending", "engine": engine, "model": model,
                            "effort": effort, "sid": sid, "created": now, "updated": now})
 
 
@@ -595,6 +595,17 @@ def check_engine(engine):
             state["login"] = kind == "login"
     with _engine_lock:
         _engine_states[engine] = state
+    if state["available"]:
+        # A terminal login can finish while the browser's device flow still waits.
+        with _login_lock:
+            session = _login_sessions.get(engine)
+        if session:
+            with session["condition"]:
+                pending = session["running"]
+                session.update(running=False, complete=True, error="")
+                session["condition"].notify_all()
+            if pending and session["proc"].poll() is None:
+                stop(session["proc"])
     return dict(state)
 
 
@@ -718,6 +729,8 @@ def _watch_login(engine, session):
             # Complete login only after the probe: UI must not read the previous login state.
             check_engine(engine)
         with session["condition"]:
+            if session.get("complete"):
+                return  # The system check already confirmed an external login.
             session["running"] = False
             session["complete"] = code == 0
             if code:
@@ -750,6 +763,7 @@ def start_login(engine):
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1,
                                 start_new_session=True)
         session = {"engine": engine, "proc": proc, "running": True, "complete": False,
+                   "auth_freshness": creds_freshness(CODEX_HOST_AUTH if engine == "codex" else HOST_CREDS),
                    "url": "", "device_code": "", "needs_code": engine == "claude", "error": "",
                    "condition": threading.Condition()}
         _login_sessions[engine] = session
@@ -765,6 +779,13 @@ def login_state(engine):
         raise ValueError("Неизвестная нейросеть")
     with _login_lock:
         session = _login_sessions.get(engine)
+    if session:
+        freshness = creds_freshness(CODEX_HOST_AUTH if engine == "codex" else HOST_CREDS)
+        with session["condition"]:
+            changed = session["running"] and freshness != session.get("auth_freshness", freshness)
+            session["auth_freshness"] = freshness
+        if changed:
+            check_engine(engine)
     return _public_login(session) if session else {"engine": engine, "running": False,
                                                      "complete": False, "url": "", "device_code": "",
                                                      "needs_code": engine == "claude", "error": ""}
