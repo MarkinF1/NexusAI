@@ -436,6 +436,11 @@ SELinux и ограничения user namespaces на хосте всё ещё 
     Скиллам docx, pdf, xlsx и pptx нужны библиотеки, а домашняя папка из песочницы не видна.
     Поэтому они ставятся в `data/plugin/tools`, и сайт ставит эту папку первой в `PATH`:
 
+    Обе сети получают одинаковые `PATH`, `NODE_PATH`, `AGENT_SKILLS_DIR`, `AGENT_TOOLS_DIR`
+    и `PLAYWRIGHT_BROWSERS_PATH`. У Codex каталог зависимостей открыт только на чтение,
+    когда подключены скиллы. Временные файлы и кэши создаются в `.nexus-tmp` и `.nexus-cache`
+    текущей рабочей папки, без общего профиля браузера между пользователями.
+
     ```bash
     T=data/plugin/tools; mkdir -p $T/bin
     python3 -m venv $T/venv

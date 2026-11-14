@@ -125,3 +125,23 @@ class SharedSkills(unittest.TestCase):
         self.assertFalse(os.path.lexists(folder/'demo'))
         self.assertTrue((folder/'.system').is_dir())
         self.assertTrue((folder/'native').is_symlink())
+
+    def test_shared_tools_are_readable_in_codex_and_have_session_local_caches(self):
+        import tomllib
+        site_skills.install(self.folder,'demo.md',SKILL)
+        tools=self.root/'tools';tools.mkdir()
+        meta={'id':uuid.uuid4().hex,'sid':'','model':'test','effort':''}
+        cwd=core.workspace(3,meta['id'])
+        access=copy.deepcopy(test_core.ACCESS['codex'])
+        with patch.object(core,'TOOLS',str(tools)):
+            args=core.codex_args(3,meta,cwd,[],access)
+            config=tomllib.loads('\n'.join(args[i+1] for i,x in enumerate(args[:-1]) if x=='-c'))
+            self.assertEqual(config['permissions']['chat']['filesystem'][str(tools)],'read')
+            env=core.skill_environment({'PATH':'/usr/bin'},cwd)
+            self.assertEqual(env['PATH'].split(os.pathsep)[0],str(tools/'bin'))
+            self.assertEqual(env['NODE_PATH'],str(tools/'node_modules'))
+            self.assertTrue(Path(env['TMPDIR']).is_relative_to(cwd))
+            self.assertTrue(Path(env['XDG_CACHE_HOME']).is_relative_to(cwd))
+            args=core.codex_args(3,meta,cwd,[],{**access,'skills':False})
+            config=tomllib.loads('\n'.join(args[i+1] for i,x in enumerate(args[:-1]) if x=='-c'))
+            self.assertNotIn(str(tools),config['permissions']['chat']['filesystem'])

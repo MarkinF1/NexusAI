@@ -833,6 +833,23 @@ def model_env(**extra):
             **extra}
 
 
+def skill_environment(env, cwd=None):
+    """Одинаковые инструменты общих скиллов для Claude и Codex."""
+    result = {**env,
+            "PATH": os.pathsep.join([os.path.join(TOOLS, "bin"), os.path.join(TOOLS, "venv", "bin"), env["PATH"]]),
+            "NODE_PATH": os.path.join(TOOLS, "node_modules"),
+            "AGENT_SKILLS_DIR": os.path.join(PLUGIN, "skills"), "AGENT_TOOLS_DIR": TOOLS,
+            "PLAYWRIGHT_BROWSERS_PATH": os.path.join(TOOLS, "browsers")}
+    libraries = [p for p in glob.glob(os.path.join(TOOLS, "runtime-libs", "usr", "lib", "*-linux-gnu")) if os.path.isdir(p)]
+    if libraries:
+        result["LD_LIBRARY_PATH"] = os.pathsep.join(libraries + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []))
+    if cwd:
+        for key, folder in (("TMPDIR", ".nexus-tmp"), ("XDG_CACHE_HOME", ".nexus-cache")):
+            result[key] = os.path.join(cwd, folder)
+            os.makedirs(result[key], exist_ok=True)
+    return result
+
+
 def file_prompt(cwd, text):
     return (text + f"\n\n[Рабочая папка сессии: {cwd}. Перед ответом обязательно проверь "
             "files/from_user и MEMORY.md. Готовые файлы сохраняй в files/for_user; "
@@ -1371,8 +1388,11 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
         rules[os.path.dirname(os.path.realpath(executable))] = "read"
     # Системные скиллы Codex остаются как есть; опубликованные скиллы сайта у
     # каждого пользователя свои и доступны только на чтение.
-    for path in codex_skills(uid, access["skills"], access["skills_off"]):
+    skill_paths = codex_skills(uid, access["skills"], access["skills_off"])
+    for path in skill_paths:
         rules[path] = "read"
+    if skill_paths and os.path.isdir(TOOLS):
+        rules[TOOLS] = "read"
     # Запрет памяти действует и в доступных соседних беседах. Не выдаём write
     # отдельным файлам: Codex 0.154.0 считает их каталогами и ломает bwrap.
     if not access["memory"]:
@@ -1436,9 +1456,6 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
         # Без --safe-mode (скиллы) CLAUDE.md и автопамять выключаются только так.
         env = model_env(CLAUDE_CONFIG_DIR=claude_home(uid), CLAUDE_CODE_DISABLE_CLAUDE_MDS="1",
                         CLAUDE_CODE_DISABLE_AUTO_MEMORY="1", NODE_PATH=os.path.join(TOOLS, "node_modules"))
-        # Инструменты скиллов первыми: без «Скиллов» песочница их прячет и
-        # команды находятся в системе как обычно.
-        env["PATH"] = os.pathsep.join([os.path.join(TOOLS, "bin"), os.path.join(TOOLS, "venv", "bin"), env["PATH"]])
         payload = build_input(prompt, images)
         parse = claude_events
     else:
@@ -1455,6 +1472,7 @@ async def run(uid, meta, text, access, images=(), on_proc=lambda proc: None, cha
         env = model_env(CODEX_HOME=codex_home(uid))
         payload = prompt
         parse = codex_events
+    env = skill_environment(env, cwd)
     proc = await asyncio.create_subprocess_exec(
         *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE, cwd=cwd, env=env,

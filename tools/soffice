@@ -4,13 +4,17 @@
 # через OSL_SOCKET_PATH. Новый профиль требует перезапуска (код 81), и прослойка
 # скилла для сокетов на нём завершает процесс до конвертации. Поэтому пустой
 # профиль заполняем готовым шаблоном.
-export OSL_SOCKET_PATH="${OSL_SOCKET_PATH:-${TMPDIR:-/tmp}}"
+# Сокет Unix ограничен по длине: абсолютный путь рабочей папки бывает слишком
+# длинным. Короткий относительный путь остаётся внутри текущей сессии.
+export OSL_SOCKET_PATH="${OSL_SOCKET_PATH:-.nexus-tmp}"
+mkdir -p "$OSL_SOCKET_PATH" || exit 1
 profile=
 for a in "$@"; do
     case "$a" in -env:UserInstallation=file://*) profile="${a#-env:UserInstallation=file://}" ;; esac
 done
 if [ -z "$profile" ]; then
-    profile="$OSL_SOCKET_PATH/lo-profile-$$"
+    profile="${TMPDIR:-$PWD/.nexus-tmp}/lo-profile-$$"
+    case "$profile" in /*) ;; *) profile="$PWD/$profile" ;; esac
     set -- "-env:UserInstallation=file://$profile" "$@"
 fi
 if [ -z "$(ls -A "$profile" 2>/dev/null)" ]; then
