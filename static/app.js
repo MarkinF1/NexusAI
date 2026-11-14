@@ -2951,32 +2951,106 @@ async function openGeneral() {
 
 $("#general-open").onclick = openGeneral;
 
-// Скиллы аккаунта claude.ai, выложенные на сайт; пользоваться ими можно по галочке «Скиллы».
-$("#skills-open").onclick = async () => {
-  let data;
-  try { data = await api("/api/skills"); } catch (e) { alert(e.message); return; }
+// Одна общая папка скиллов для всех нейросетей сайта.
+let siteSkillsOpenGeneration = 0;
+async function openSiteSkills() {
+  const generation = ++siteSkillsOpenGeneration;
   card = null;
   document.querySelectorAll("#users-list button").forEach((b) => b.classList.remove("active"));
-  const on = new Set(Object.keys(data.site));
   const form = el("form", "site-skills");
-  form.append(el("h3", "", "Скиллы сайта"),
-    el("p", "muted", "Скиллы вашего аккаунта claude.ai. Отмеченные доступны всем, у кого в «Доступе» стоит галочка «Скиллы». Обновления из аккаунта подхватываются сами."));
-  for (const [name, about] of Object.entries(data.account)) {
-    const option = el("div", "option");
-    option.append(checkbox(name, on.has(name), (v) => { if (v) on.add(name); else on.delete(name); }), el("div", "muted", about));
-    form.append(option);
-  }
-  if (!Object.keys(data.account).length) form.append(el("p", "muted", "Скиллов аккаунта нет: их скачивает Claude Code хозяина сервера в ~/.claude/skills/synced."));
-  const own = Object.keys(data.site).filter((name) => !(name in data.account));
-  if (own.length) form.append(el("p", "muted", "Свои скиллы из data/plugin/skills: " + own.join(", ")));
-  form.append(el("button", "primary", "Сохранить"));
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    try { await api("/api/skills", { method: "PUT", json: [...on] }); alert("Сохранено"); } catch (err) { alert(err.message); }
-  };
+  const intro = el("p", "muted", "Общие инструкции, скрипты и шаблоны для всех нейросетей сайта.");
+  const list = el("div", "site-skills-list");
+  list.append(el("p", "muted", "Загрузка скиллов…"));
+  const actions = el("div", "site-skills-actions");
+  const add = el("button", "primary", "Добавить скилл");
+  add.type = "button";
+  add.disabled = true;
+  const save = el("button", "", "Сохранить выбор");
+  save.type = "submit";
+  save.hidden = true;
+  const upload = el("input");
+  upload.type = "file";
+  upload.accept = ".md,.zip";
+  upload.hidden = true;
+  const notice = el("p", "muted site-skills-notice");
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  actions.append(add, save);
+  form.append(el("h3", "", "Скиллы сайта"), intro, list, actions, upload,
+    el("p", "muted", "Загрузите SKILL.md или ZIP одного скилла со скриптами и ресурсами, до 5 МБ. Общие скиллы подключаются пользователям, у которых разрешены «Скиллы»."), notice);
   $("#card").replaceChildren(form);
   setLevel("section");
-};
+  const live = () => generation === siteSkillsOpenGeneration && document.querySelector("#card .site-skills") === form;
+  let on = new Set();
+  let loaded = false;
+  function render(data, preserve = false) {
+    if (!live()) return;
+    if (!preserve) on = new Set(Object.keys(data.site));
+    if (data.added) on.add(data.added);
+    if (data.networks?.length) intro.textContent = "Общие инструкции, скрипты и шаблоны для " + data.networks.join(" и ") + ". Добавленный скилл хранится в одном экземпляре.";
+    list.replaceChildren();
+    const all = {...data.account, ...data.site};
+    for (const name of Object.keys(all).sort((a,b) => a.localeCompare(b))) {
+      const option = el("div", "option");
+      if (name in data.account) {
+        option.append(checkbox(name, on.has(name), (v) => { if (v) on.add(name); else on.delete(name); }));
+      } else {
+        option.classList.add("skill-local");
+        option.append(el("strong", "", name), el("span", "skill-badge", "Общий скилл"));
+      }
+      if (all[name]) option.append(el("div", "muted", all[name]));
+      list.append(option);
+    }
+    if (!Object.keys(all).length) list.append(el("p", "muted", "Общих скиллов пока нет. Нажмите «Добавить скилл», чтобы загрузить первый."));
+    if (Object.keys(data.account).length) list.append(el("p", "muted", "Отметьте скиллы аккаунта, которые нужно сделать общими, и сохраните выбор."));
+    save.hidden = !Object.keys(data.account).length;
+    loaded = true;
+    add.disabled = false;
+  }
+  function message(text, error = false) {
+    if (!live()) return;
+    notice.textContent = text;
+    notice.classList.toggle("error", error);
+  }
+  add.onclick = () => upload.click();
+  upload.onchange = async () => {
+    const file = upload.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { message("Скилл должен быть не больше 5 МБ.", true); upload.value = ""; return; }
+    add.disabled = save.disabled = true;
+    message("Добавляем скилл…");
+    const body = new FormData();
+    body.append("file", file);
+    try {
+      const data = await api("/api/skills", {method: "POST", body});
+      render(data, true);
+      message("Скилл «" + data.added + "» добавлен для всех нейросетей сайта.");
+    } catch (err) { message(err.message, true); }
+    finally { if (live()) { add.disabled = !loaded; save.disabled = false; upload.value = ""; } }
+  };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    add.disabled = save.disabled = true;
+    message("Сохраняем…");
+    try {
+      const data = await api("/api/skills", {method: "PUT", json: [...on]});
+      render(data);
+      message("Выбор сохранён для всех нейросетей сайта.");
+    } catch (err) { message(err.message, true); }
+    finally { if (live()) add.disabled = save.disabled = false; }
+  };
+  try { render(await api("/api/skills")); }
+  catch (err) {
+    if (!live()) return;
+    list.replaceChildren();
+    const retry = el("button", "", "Повторить");
+    retry.type = "button";
+    retry.onclick = openSiteSkills;
+    list.append(el("p", "muted", "Не удалось получить список скиллов."), retry);
+    message(err.message, true);
+  }
+}
+$("#skills-open").onclick = openSiteSkills;
 
 let settingsOpenGen = 0;
 $("#settings-open").onclick = async () => {

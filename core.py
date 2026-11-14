@@ -965,9 +965,13 @@ def skill_list(pattern):
     """Скиллы по шаблону пути к SKILL.md: имя -> описание."""
     found = {}
     for path in sorted(glob.glob(pattern)):
-        with open(path, encoding="utf-8", errors="replace") as f:
-            about = re.search(r"^description:\s*(.+)$", f.read(), re.M)
-        found[os.path.basename(os.path.dirname(path))] = about.group(1).strip(" '\"") if about else ""
+        from site_skills import metadata
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                about = metadata(f.read())["description"]
+        except OSError:
+            continue
+        found[os.path.basename(os.path.dirname(path))] = about
     return found
 
 
@@ -1011,9 +1015,11 @@ def codex_skills(uid, enabled=True, disabled=()):
     os.makedirs(folder, exist_ok=True)
     root = os.path.realpath(os.path.join(PLUGIN, "skills"))
     for old in glob.glob(os.path.join(folder, "*")):
-        if os.path.islink(old) and os.path.commonpath([os.path.realpath(old), root]) == root \
-                and os.path.basename(old) not in wanted:
-            os.unlink(old)
+        if os.path.islink(old):
+            # Check our immediate target, not its final account-skill symlink.
+            target = os.path.abspath(os.path.join(os.path.dirname(old), os.readlink(old)))
+            if os.path.commonpath([target, root]) == root and os.path.basename(old) not in wanted:
+                os.unlink(old)
     linked = []
     for name in sorted(wanted):
         source = os.path.join(root, name)
@@ -1358,6 +1364,11 @@ def codex_args(uid, meta, cwd, files, access, channel="web"):
     mode = "write" if access["write"] else "read"
     data = data_dir(uid)
     rules = {data: mode}
+    # bwrap повторно запускает Codex; его бинарник и соседние helper-файлы
+    # должны оставаться видимыми в ограниченном профиле.
+    if CODEX_BIN:
+        executable = shutil.which(CODEX_BIN) or CODEX_BIN
+        rules[os.path.dirname(os.path.realpath(executable))] = "read"
     # Системные скиллы Codex остаются как есть; опубликованные скиллы сайта у
     # каждого пользователя свои и доступны только на чтение.
     for path in codex_skills(uid, access["skills"], access["skills_off"]):

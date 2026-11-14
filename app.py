@@ -24,6 +24,7 @@ import core
 import jobs
 import push
 import session_files
+import site_skills as shared_skills
 import settings
 import stt
 import tg
@@ -867,13 +868,28 @@ def engine_login_code(engine: str, body: EngineCode, user=Depends(admin_user)):
 
 @app.get("/api/skills")
 def site_skills(user=Depends(admin_user)):
-    """Скиллы аккаунта claude.ai и какие из них выложены на сайт."""
-    return {"account": core.account_skills(), "site": core.skills()}
+    """Общая папка навыков для всех поддерживаемых нейросетей."""
+    return {"account": core.account_skills(), "site": core.skills(), "networks": list(core.ENGINE_NAMES.values())}
 
 
 @app.put("/api/skills")
 def publish_skills(body: list[str], user=Depends(admin_user)):
-    return {"account": core.account_skills(), "site": core.publish_skills(set(body))}
+    core.publish_skills(set(body))
+    return site_skills(user)
+
+
+@app.post("/api/skills")
+async def add_site_skill(file: UploadFile = File(...), user=Depends(admin_user)):
+    data=await upload_bytes(file,shared_skills.MAX_UPLOAD)
+    try:
+        name=await asyncio.to_thread(shared_skills.install,os.path.join(core.PLUGIN,"skills"),file.filename or "",data)
+    except FileExistsError as exc:
+        raise HTTPException(409,str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from None
+    except OSError:
+        raise HTTPException(500,"Не удалось сохранить скилл. Проверьте место на диске и права каталога.") from None
+    return {**site_skills(user),"added":name}
 
 
 class NewUser(BaseModel):

@@ -637,6 +637,11 @@ fieldset.engine > p.muted { margin: 0 0 12px; }
 progress { width: 100%; margin: 12px 0; accent-color: var(--ink); }
 .site-skills { padding: 0 24px 24px; overflow-y: auto; }
 .site-skills .option .muted { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.site-skills .skill-local .muted { margin-left: 0; }
+.site-skills-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.site-skills .skill-badge { margin-left: 8px; color: var(--muted); font-size: 12px; }
+.site-skills-notice { min-height: 1.4em; }
+.site-skills-notice.error { color: var(--error); }
 .new-user { display: flex; flex-direction: column; gap: 10px; padding: 0 24px; max-width: 380px; }
 input:disabled + *, label:has(input:disabled) { opacity: .45; }
 
