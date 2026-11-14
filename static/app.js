@@ -605,6 +605,7 @@ function meter(name, used, limit, text) {
 let diskFull = false;
 
 function showMe() {
+  $("#telegram-open").hidden = !me.tg_bot;
   const disk = me.disk;
   diskFull = disk.used != null && !!disk.quota && disk.used >= disk.quota;
   const diskBlock = el("div", "budget");
@@ -1029,6 +1030,27 @@ function tgIcon() {
   return img;
 }
 
+// Открываем окно до await, чтобы переход работал и на мобильных браузерах.
+async function openTelegram() {
+  if (!me.tg_bot) throw new Error("Бот Telegram не запущен");
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  try {
+    const url = me.tg
+      ? `https://t.me/${encodeURIComponent(me.tg_bot)}`
+      : (await api("/api/me/telegram", { method: "POST" })).url;
+    if (tab) tab.location.href = url; else location.href = url;
+  } catch (err) { tab?.close(); throw err; }
+}
+
+$("#telegram-open").onclick = async () => {
+  const button = $("#telegram-open");
+  button.disabled = true;
+  try { await openTelegram(); }
+  catch (err) { alert(err.message); }
+  finally { button.disabled = false; }
+};
+
 // Блок в «Настройках»: привязка аккаунта и две галочки. Без бота блока нет.
 function showTg() {
   const box = $("#tg-account");
@@ -1043,12 +1065,7 @@ function showTg() {
         if (!confirm("Отвязать Telegram? Бот перестанет вам отвечать, группы отключатся.")) return;
         await api("/api/me/telegram", { method: "DELETE" });
       } else {
-        // Окно открываем сразу по клику: после await браузер счёл бы его всплывающим.
-        const tab = window.open("about:blank", "_blank");
-        try {
-          const { url } = await api("/api/me/telegram", { method: "POST" });
-          if (tab) { tab.opener = null; tab.location.href = url; } else location.href = url;
-        } catch (err) { tab?.close(); throw err; }
+        await openTelegram();
         alert("В Telegram нажмите «Запустить» у бота, затем закройте это окно.");
       }
       await refreshMe();
